@@ -1,7 +1,4 @@
 //! # Policy View Helper — Tests
-//!
-//! Integration tests using Soroban SDK test utilities and mock contracts
-//! that match the OZ cross-contract interface.
 
 use soroban_sdk::{
     contract, contractimpl, testutils::Address as _,
@@ -63,6 +60,20 @@ impl MockSpendingLimitPolicy {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// Mock Policy (Not Spending-Limit)
+// ──────────────────────────────────────────────────────────────────────────
+
+#[contract]
+pub struct MockOtherPolicy;
+
+#[contractimpl]
+impl MockOtherPolicy {
+    pub fn some_other_function(_env: Env) -> u32 {
+        42
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // Test helpers
 // ──────────────────────────────────────────────────────────────────────────
 
@@ -78,6 +89,10 @@ fn deploy_mock_spending_limit_policy(env: &Env, data: &SpendingLimitData) -> Add
     let client = MockSpendingLimitPolicyClient::new(env, &addr);
     client.init(data);
     addr
+}
+
+fn deploy_mock_other_policy(env: &Env) -> Address {
+    env.register(MockOtherPolicy, ())
 }
 
 fn default_spending_limit_data(env: &Env) -> SpendingLimitData {
@@ -131,4 +146,34 @@ fn test_get_spending_limit_state_positive() {
     assert_eq!(view.cap, 10_000_000_000);
     assert_eq!(view.spent_in_window, 2_500_000_000);
     assert_eq!(view.window_seconds, 86400);
+}
+
+/// Negative case: no policy installed on the context rule.
+#[test]
+fn test_get_spending_limit_state_no_policy() {
+    let env = Env::default();
+    let rule = default_context_rule(&env, Vec::new(&env));
+    let account_addr = deploy_mock_smart_account(&env, &rule);
+
+    let contract_id = env.register(crate::PolicyViewHelper, ());
+    let client = crate::PolicyViewHelperClient::new(&env, &contract_id);
+
+    let result = client.try_get_spending_limit_state(&account_addr, 1);
+    assert!(result.is_err(), "expected error but got Ok");
+}
+
+/// Negative case: policies exist but none expose
+/// `get_spending_limit_data`.
+#[test]
+fn test_get_spending_limit_state_no_matching_policy() {
+    let env = Env::default();
+    let other_policy = deploy_mock_other_policy(&env);
+    let rule = default_context_rule(&env, Vec::from_array(&env, [other_policy]));
+    let account_addr = deploy_mock_smart_account(&env, &rule);
+
+    let contract_id = env.register(crate::PolicyViewHelper, ());
+    let client = crate::PolicyViewHelperClient::new(&env, &contract_id);
+
+    let result = client.try_get_spending_limit_state(&account_addr, 1);
+    assert!(result.is_err(), "expected error but got Ok");
 }
