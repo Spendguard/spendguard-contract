@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = [
+    "contracts/policy-view-helper",
+]
+
+[workspace.package]
+authors = ["SpendGuard Contributors"]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/spendguard/spendguard-contract"
+keywords = ["stellar", "soroban", "smart-contracts", "spending-limits"]
+version = "0.1.0"

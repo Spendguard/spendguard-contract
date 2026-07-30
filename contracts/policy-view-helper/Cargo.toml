@@ -1,0 +1,12 @@
+[package]
+name = "policy-view-helper"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+doctest = false
