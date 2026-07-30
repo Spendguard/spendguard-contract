@@ -2,11 +2,11 @@
 
 use soroban_sdk::{
     contract, contractimpl, testutils::Address as _,
-    Address, BytesN, Env, String, Symbol, Vec,
+    Address, BytesN, Env, IntoVal, String, Symbol, TryFromVal, Val, Vec,
 };
 
 use crate::types::{
-    ContextRule, ContextRuleType,
+    ContextRule, ContextRuleType, ContextSigner,
     SpendingLimitData, SpendingEntry,
     SpendingLimitView,
 };
@@ -237,4 +237,143 @@ fn test_get_spending_limit_state_with_history() {
     assert_eq!(view.spent_in_window, 2_500_000_000);
     let expected_start = close_time - 1000 * 5;
     assert_eq!(view.window_started_at, expected_start);
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// OZ Serialization Compatibility Tests
+//
+// These tests verify that our mirror types (defined in `types.rs`) can
+// correctly decode data serialized by the real `stellar-accounts` v0.7.1
+// types.  This catches field-order or memory-layout mismatches between
+// the OZ `#[contracttype]` structs and our local mirrors.
+//
+// Because `stellar-accounts` is a dev-dependency, we import the real
+// types directly and round-trip through `Env`-based serialization.
+// ──────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod oz_serialization_compat {
+    use soroban_sdk::{testutils::Address as _, Address, Env, IntoVal, TryFromVal, Val, Vec};
+
+    // Import the REAL stellar-accounts v0.7.1 types, aliased to avoid name
+    // collisions with our mirror types.
+    use stellar_accounts::policies::spending_limit::{
+        SpendingLimitData as RealData,
+        SpendingEntry as RealEntry,
+        SpendingLimitAccountParams as RealParams,
+    };
+    use stellar_accounts::smart_account::{
+        ContextRule as RealContextRule,
+        ContextRuleType as RealContextRuleType,
+        Signer as RealSigner,
+    };
+
+    use crate::types::{
+        ContextRule as OurContextRule,
+        ContextRuleType as OurContextRuleType,
+        ContextSigner as OurContextSigner,
+        SpendingLimitData as OurData,
+        SpendingEntry as OurEntry,
+    };
+
+    /// Verifies that our `SpendingLimitData` mirror can decode data
+    /// serialized by the real OZ `SpendingLimitData`.
+    #[test]
+    fn test_mirror_decodes_spending_limit_data() {
+        let env = Env::default();
+
+        let real_entry = RealEntry {
+            amount: 1_000_000_000i128,
+            ledger_sequence: 100_000_u32,
+        };
+        let real_data = RealData {
+            spending_limit: 10_000_000_000i128,
+            period_ledgers: 17280_u32,
+            spending_history: Vec::from_array(&env, [real_entry]),
+            cached_total_spent: 1_000_000_000i128,
+        };
+
+        // Serialize using the real OZ type
+        let val: Val = real_data.into_val(&env);
+
+        // Deserialize using our mirror type
+        let our_data: OurData = match OurData::try_from_val(&env, &val) {
+            Ok(d) => d,
+            Err(()) => panic!("Our SpendingLimitData mirror failed to decode real OZ data"),
+        };
+
+        // Verify all fields match
+        assert_eq!(our_data.spending_limit, real_data.spending_limit);
+        assert_eq!(our_data.period_ledgers, real_data.period_ledgers);
+        assert_eq!(our_data.cached_total_spent, real_data.cached_total_spent);
+        assert_eq!(our_data.spending_history.len(), 1);
+
+        let our_entry = our_data.spending_history.get(0).unwrap();
+        assert_eq!(our_entry.amount, real_entry.amount);
+        assert_eq!(our_entry.ledger_sequence, real_entry.ledger_sequence);
+    }
+
+    /// Verifies that our `ContextRule` mirror can decode data serialized
+    /// by the real OZ `ContextRule`.
+    #[test]
+    fn test_mirror_decodes_context_rule() {
+        let env = Env::default();
+
+        let policy_addr = Address::generate(&env);
+
+        let real_rule = RealContextRule {
+            id: 42_u32,
+            context_type: RealContextRuleType::CallContract(Address::generate(&env)),
+            name: soroban_sdk::String::from_str(&env, "test-rule"),
+            valid_until: Some(200_000_u32),
+            signers: Vec::new(&env),
+            policies: Vec::from_array(&env, [policy_addr]),
+        };
+
+        // Serialize using the real OZ type
+        let val: Val = real_rule.into_val(&env);
+
+        // Deserialize using our mirror type
+        let our_rule: OurContextRule = match OurContextRule::try_from_val(&env, &val) {
+            Ok(r) => r,
+            Err(()) => panic!("Our ContextRule mirror failed to decode real OZ ContextRule"),
+        };
+
+        // Verify fields match
+        assert_eq!(our_rule.id, real_rule.id);
+        assert_eq!(our_rule.name, real_rule.name);
+        assert_eq!(our_rule.valid_until, real_rule.valid_until);
+        assert_eq!(our_rule.policies.len(), 1);
+        assert_eq!(our_rule.policies.get(0).unwrap(), policy_addr);
+
+        // Verify context type round-trips
+        match (&our_rule.context_type, &real_rule.context_type) {
+            (
+                OurContextRuleType::CallContract(our_addr),
+                RealContextRuleType::CallContract(real_addr),
+            ) => assert_eq!(our_addr, real_addr),
+            _ => panic!("ContextRuleType variant mismatch after round-trip"),
+        }
+    }
+
+    /// Verifies that our `SpendingEntry` mirror can decode data
+    /// serialized by the real OZ `SpendingEntry`.
+    #[test]
+    fn test_mirror_decodes_spending_entry() {
+        let env = Env::default();
+
+        let real_entry = RealEntry {
+            amount: 5_000_000_000i128,
+            ledger_sequence: 123_456_u32,
+        };
+
+        let val: Val = real_entry.into_val(&env);
+        let our_entry: OurEntry = match OurEntry::try_from_val(&env, &val) {
+            Ok(e) => e,
+            Err(()) => panic!("Our SpendingEntry mirror failed to decode real OZ SpendingEntry"),
+        };
+
+        assert_eq!(our_entry.amount, real_entry.amount);
+        assert_eq!(our_entry.ledger_sequence, real_entry.ledger_sequence);
+    }
 }
