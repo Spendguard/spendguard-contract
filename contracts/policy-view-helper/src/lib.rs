@@ -2,7 +2,10 @@
 mod read;
 mod types;
 
-use soroban_sdk::contract;
+use soroban_sdk::{contract, contractimpl, Env};
+use types::SpendingLimitView;
+
+const WASM_VERSION: u32 = 1;
 
 /// A minimal read-only helper contract that provides a stable, versioned
 /// interface for querying an OZ `stellar-accounts` smart account's
@@ -13,6 +16,14 @@ use soroban_sdk::contract;
 /// indexer.
 #[contract]
 pub struct PolicyViewHelper;
+
+#[contractimpl]
+impl PolicyViewHelper {
+    /// Returns the WASM version of this helper contract.
+    pub fn get_version(_env: Env) -> u32 {
+        WASM_VERSION
+    }
+}
 
 #[cfg(test)]
 mod test;
