@@ -15,7 +15,7 @@ The `policy-view-helper` contract exposes two public functions:
 | Function | Returns | Description |
 |---|---|---|
 | `get_version` | `u32` | WASM version marker for indexer compatibility checks. |
-| `get_spending_limit_state(account, context_rule_id)` | `SpendingLimitView` | Reads the spending cap, rolling window, and current spent total from the OZ `spending_limit` policy installed on a specific context rule. |
+| `get_spending_limit_state(account, context_rule_id)` | `SpendingLimitView` | Reads the spending cap (`cap`), window length in ledgers (`window_ledgers`), current spent total (`spent_in_window`), and earliest entry ledger (`window_started_ledger`) from the OZ `spending_limit` policy. All values are raw on-chain data — no wall-clock conversion is performed. |
 
 ### Cross-contract call flow
 

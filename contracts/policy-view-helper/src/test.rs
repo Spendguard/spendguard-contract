@@ -145,7 +145,8 @@ fn test_get_spending_limit_state_positive() {
 
     assert_eq!(view.cap, 10_000_000_000);
     assert_eq!(view.spent_in_window, 2_500_000_000);
-    assert_eq!(view.window_seconds, 86400);
+    assert_eq!(view.window_ledgers, 17280);
+    assert_eq!(view.window_started_ledger, 0);
 }
 
 /// Negative case: no policy installed on the context rule.
@@ -205,13 +206,12 @@ fn test_get_spending_limit_state_unsupported_context() {
     assert!(result.is_err(), "expected error but got Ok");
 }
 
-/// Edge case: spending history has entries → `window_started_at` is
-/// derived from the earliest entry's ledger sequence.
+/// Edge case: spending history has entries → `window_started_ledger`
+/// matches the earliest entry's ledger sequence.
 #[test]
 fn test_get_spending_limit_state_with_history() {
     let env = Env::default();
     let current_ledger = env.ledger().sequence();
-    let close_time = env.ledger().timestamp();
 
     let mut data = default_spending_limit_data(&env);
     let entry1 = SpendingEntry {
@@ -235,8 +235,8 @@ fn test_get_spending_limit_state_with_history() {
     let view: SpendingLimitView = client.get_spending_limit_state(&account_addr, 1);
 
     assert_eq!(view.spent_in_window, 2_500_000_000);
-    let expected_start = close_time - 1000 * 5;
-    assert_eq!(view.window_started_at, expected_start);
+    // window_started_ledger should equal the earliest entry's ledger sequence
+    assert_eq!(view.window_started_ledger, current_ledger - 1000);
 }
 
 // ──────────────────────────────────────────────────────────────────────────

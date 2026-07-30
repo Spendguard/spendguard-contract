@@ -47,13 +47,7 @@ pub fn get_spending_limit_state(
         );
 
         if let Ok(Ok(data)) = result {
-            let current_ledger = env.ledger().sequence();
-            let ledger_close_time = env.ledger().timestamp();
-            return Ok(SpendingLimitView::from_spending_limit_data(
-                &data,
-                current_ledger,
-                ledger_close_time,
-            ));
+            return Ok(SpendingLimitView::from(data));
         }
     }
 

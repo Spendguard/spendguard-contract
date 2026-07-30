@@ -1,24 +1,34 @@
-use soroban_sdk::{contracterror, contracttype, Address, Env, Vec};
+use soroban_sdk::{contracterror, contracttype, Address, Vec};
 
 // ---------------------------------------------------------------------------
 // Public view types — returned by this contract's API
 // ---------------------------------------------------------------------------
 
 /// The decoded spending limit state returned to the indexer.
+///
+/// All fields map directly from the on-chain `SpendingLimitData` stored by
+/// the OZ `spending_limit` policy contract.  No wall-clock conversion is
+/// performed — the indexer should convert ledger-sequence-based fields to
+/// timestamps using precise Soroban RPC close-time data.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct SpendingLimitView {
-    /// Maximum amount (in stroops) allowed within the window.
+    /// Maximum amount (in stroops) allowed within the rolling window.
     pub cap: i128,
-    /// The rolling window duration, expressed in wall-clock seconds as
-    /// approximated from the on-chain `period_ledgers` field (one ledger
-    /// ≈ 5 seconds on Stellar).
-    pub window_seconds: u64,
-    /// Total amount (in stroops) spent so far in the current rolling window.
+    /// The rolling window length in ledgers (raw `period_ledgers` from
+    /// the OZ policy).  The indexer should multiply by the average
+    /// ledger-close time (~5 s on Stellar mainnet, but variable) to
+    /// estimate wall-clock duration, or use actual close-time data from
+    /// Soroban RPC `getLedgerEntries` for precision.
+    pub window_ledgers: u32,
+    /// Total amount (in stroops) spent so far in the current rolling
+    /// window (raw `cached_total_spent` from the OZ policy).
     pub spent_in_window: i128,
-    /// Approximate Unix timestamp (seconds since epoch) when the current
-    /// rolling window started.
-    pub window_started_at: u64,
+    /// The ledger sequence of the earliest still-retained spending entry,
+    /// or `0` if the window has no spending history yet.  The indexer
+    /// can look up this ledger's close time via Soroban RPC to
+    /// determine the precise window start time.
+    pub window_started_ledger: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -90,32 +100,25 @@ pub enum ContextSigner {
 }
 
 // ---------------------------------------------------------------------------
-// Internal helpers
+// Conversions: OZ data → view
 // ---------------------------------------------------------------------------
 
-impl SpendingLimitView {
-    /// Converts on-chain `SpendingLimitData` into a wall-clock-oriented
-    /// `SpendingLimitView`.
-    pub fn from_spending_limit_data(
-        data: &SpendingLimitData,
-        current_ledger: u32,
-        approximate_ledger_close_time: u64,
-    ) -> Self {
-        let window_seconds = (data.period_ledgers as u64) * 5;
-
-        let window_started_at = if let Some(entry) = data.spending_history.first() {
-            let ledgers_ago = current_ledger.saturating_sub(entry.ledger_sequence);
-            let seconds_ago = (ledgers_ago as u64) * 5;
-            approximate_ledger_close_time.saturating_sub(seconds_ago)
-        } else {
-            approximate_ledger_close_time.saturating_sub(window_seconds)
-        };
+impl From<SpendingLimitData> for SpendingLimitView {
+    /// Maps the on-chain `SpendingLimitData` directly to a
+    /// `SpendingLimitView`, preserving all raw OZ values without
+    /// wall-clock conversion.
+    fn from(data: SpendingLimitData) -> Self {
+        let window_started_ledger = data
+            .spending_history
+            .first()
+            .map(|entry| entry.ledger_sequence)
+            .unwrap_or(0);
 
         SpendingLimitView {
             cap: data.spending_limit,
-            window_seconds,
+            window_ledgers: data.period_ledgers,
             spent_in_window: data.cached_total_spent,
-            window_started_at,
+            window_started_ledger,
         }
     }
 }
