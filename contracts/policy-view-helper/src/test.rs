@@ -2,7 +2,7 @@
 
 use soroban_sdk::{
     contract, contractimpl, testutils::Address as _,
-    Address, Env, String, Symbol, Vec,
+    Address, BytesN, Env, String, Symbol, Vec,
 };
 
 use crate::types::{
@@ -176,4 +176,65 @@ fn test_get_spending_limit_state_no_matching_policy() {
 
     let result = client.try_get_spending_limit_state(&account_addr, 1);
     assert!(result.is_err(), "expected error but got Ok");
+}
+
+/// Negative case: context rule type is `CreateContract`.
+#[test]
+fn test_get_spending_limit_state_unsupported_context() {
+    let env = Env::default();
+    let policy_addr =
+        deploy_mock_spending_limit_policy(&env, &default_spending_limit_data(&env));
+
+    let create_contract_rule = ContextRule {
+        id: 2,
+        context_type: ContextRuleType::CreateContract(BytesN::from_array(
+            &env,
+            &[0u8; 32],
+        )),
+        name: String::from_str(&env, "create-rule"),
+        valid_until: None,
+        signers: Vec::new(&env),
+        policies: Vec::from_array(&env, [policy_addr]),
+    };
+    let account_addr = deploy_mock_smart_account(&env, &create_contract_rule);
+
+    let contract_id = env.register(crate::PolicyViewHelper, ());
+    let client = crate::PolicyViewHelperClient::new(&env, &contract_id);
+
+    let result = client.try_get_spending_limit_state(&account_addr, 2);
+    assert!(result.is_err(), "expected error but got Ok");
+}
+
+/// Edge case: spending history has entries → `window_started_at` is
+/// derived from the earliest entry's ledger sequence.
+#[test]
+fn test_get_spending_limit_state_with_history() {
+    let env = Env::default();
+    let current_ledger = env.ledger().sequence();
+    let close_time = env.ledger().timestamp();
+
+    let mut data = default_spending_limit_data(&env);
+    let entry1 = SpendingEntry {
+        amount: 1_000_000_000,
+        ledger_sequence: current_ledger - 1000,
+    };
+    let entry2 = SpendingEntry {
+        amount: 1_500_000_000,
+        ledger_sequence: current_ledger - 500,
+    };
+    data.spending_history = Vec::from_array(&env, [entry1, entry2]);
+    data.cached_total_spent = 2_500_000_000;
+
+    let policy_addr = deploy_mock_spending_limit_policy(&env, &data);
+    let rule = default_context_rule(&env, Vec::from_array(&env, [policy_addr]));
+    let account_addr = deploy_mock_smart_account(&env, &rule);
+
+    let contract_id = env.register(crate::PolicyViewHelper, ());
+    let client = crate::PolicyViewHelperClient::new(&env, &contract_id);
+
+    let view: SpendingLimitView = client.get_spending_limit_state(&account_addr, 1);
+
+    assert_eq!(view.spent_in_window, 2_500_000_000);
+    let expected_start = close_time - 1000 * 5;
+    assert_eq!(view.window_started_at, expected_start);
 }
