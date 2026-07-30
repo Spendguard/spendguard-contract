@@ -6,7 +6,7 @@ use soroban_sdk::{
 };
 
 use crate::types::{
-    ContextRule, ContextRuleType, ContextSigner,
+    ContextRule, ContextRuleType,
     SpendingLimitData, SpendingEntry,
     SpendingLimitView,
 };
@@ -260,18 +260,15 @@ mod oz_serialization_compat {
     use stellar_accounts::policies::spending_limit::{
         SpendingLimitData as RealData,
         SpendingEntry as RealEntry,
-        SpendingLimitAccountParams as RealParams,
     };
     use stellar_accounts::smart_account::{
         ContextRule as RealContextRule,
         ContextRuleType as RealContextRuleType,
-        Signer as RealSigner,
     };
 
     use crate::types::{
         ContextRule as OurContextRule,
         ContextRuleType as OurContextRuleType,
-        ContextSigner as OurContextSigner,
         SpendingLimitData as OurData,
         SpendingEntry as OurEntry,
     };
