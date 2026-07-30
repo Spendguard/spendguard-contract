@@ -1,1 +1,61 @@
-// Read functions will be added in commit 4 and 6.
+use soroban_sdk::{Address, Env, IntoVal, Symbol};
+use crate::types::{
+    ContextRule, ContextRuleType, PolicyViewError, SpendingLimitData, SpendingLimitView,
+};
+
+/// Queries the OZ smart account contract and its installed
+/// `spending_limit` policy contract to return the current spending
+/// limit state for the given context rule.
+pub fn get_spending_limit_state(
+    env: &Env,
+    account: &Address,
+    context_rule_id: u32,
+) -> Result<SpendingLimitView, PolicyViewError> {
+    // ------------------------------------------------------------------
+    // Step 1: Retrieve the context rule from the smart account contract.
+    // ------------------------------------------------------------------
+    let context_rule: ContextRule = match env.try_invoke_contract::<ContextRule, soroban_sdk::Error>(
+        account,
+        &Symbol::new(env, "get_context_rule"),
+        (context_rule_id,).into_val(env),
+    ) {
+        Ok(Ok(rule)) => rule,
+        _ => return Err(PolicyViewError::AccountNotFound),
+    };
+
+    // ------------------------------------------------------------------
+    // Step 2: Verify the context rule's type is compatible with the
+    // `spending_limit` policy.
+    // ------------------------------------------------------------------
+    if !matches!(context_rule.context_type, ContextRuleType::CallContract(_)) {
+        if matches!(context_rule.context_type, ContextRuleType::CreateContract(_)) {
+            return Err(PolicyViewError::UnsupportedContextType);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Step 3: Iterate over the rule's policy contracts and try to
+    // retrieve spending limit data from each.
+    // ------------------------------------------------------------------
+    let get_lmt_data_sym = Symbol::new(env, "get_spending_limit_data");
+
+    for policy_addr in context_rule.policies.iter() {
+        let result = env.try_invoke_contract::<SpendingLimitData, soroban_sdk::Error>(
+            &policy_addr,
+            &get_lmt_data_sym,
+            (context_rule_id, account.clone()).into_val(env),
+        );
+
+        if let Ok(Ok(data)) = result {
+            let current_ledger = env.ledger().sequence();
+            let ledger_close_time = env.ledger().timestamp();
+            return Ok(SpendingLimitView::from_spending_limit_data(
+                &data,
+                current_ledger,
+                ledger_close_time,
+            ));
+        }
+    }
+
+    Err(PolicyViewError::NoSpendingLimitPolicyInstalled)
+}
