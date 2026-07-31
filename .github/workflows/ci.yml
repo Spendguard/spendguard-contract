@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  quality:
+    name: Test & Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Mirrors rust-toolchain.toml: stable channel, wasm32v1-none target,
+      # rustfmt/clippy/rust-src components.
+      - name: Install Rust toolchain (rust-toolchain.toml)
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          targets: wasm32v1-none
+          components: rustfmt, clippy, rust-src
+
+      - name: Run tests
+        run: cargo test --workspace
+
+      # Note: clippy lint flags must follow the `--` separator. The form
+      # `cargo clippy ... --deny warnings` is rejected by cargo
+      # ("unexpected argument '--deny' found"); `-- -D warnings` is the
+      # canonical way to deny all warnings.
+      - name: Clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
