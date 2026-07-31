@@ -77,9 +77,11 @@ pub struct ContextRule {
     pub id: u32,
     pub context_type: ContextRuleType,
     pub name: soroban_sdk::String,
-    pub valid_until: Option<u32>,
     pub signers: Vec<ContextSigner>,
+    pub signer_ids: Vec<u32>,
     pub policies: Vec<Address>,
+    pub policy_ids: Vec<u32>,
+    pub valid_until: Option<u32>,
 }
 
 /// Mirror of `stellar_accounts::smart_account::ContextRuleType`.
@@ -96,7 +98,7 @@ pub enum ContextRuleType {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ContextSigner {
     Delegated(Address),
-    External(Address, soroban_sdk::BytesN<32>),
+    External(Address, soroban_sdk::Bytes),
 }
 
 // ---------------------------------------------------------------------------

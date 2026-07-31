@@ -1,8 +1,9 @@
 //! # Policy View Helper — Tests
 
 use soroban_sdk::{
-    contract, contractimpl, testutils::Address as _,
-    Address, BytesN, Env, IntoVal, String, Symbol, TryFromVal, Val, Vec,
+    contract, contractimpl,
+    testutils::{Address as _, Ledger as _},
+    Address, BytesN, Env, String, Symbol, Vec,
 };
 
 use crate::types::{
@@ -109,9 +110,11 @@ fn default_context_rule(env: &Env, policy_addrs: Vec<Address>) -> ContextRule {
         id: 1,
         context_type: ContextRuleType::CallContract(Address::generate(env)),
         name: String::from_str(env, "test-rule"),
-        valid_until: None,
         signers: Vec::new(env),
+        signer_ids: Vec::new(env),
         policies: policy_addrs,
+        policy_ids: Vec::new(env),
+        valid_until: None,
     }
 }
 
@@ -141,7 +144,7 @@ fn test_get_spending_limit_state_positive() {
     let contract_id = env.register(crate::PolicyViewHelper, ());
     let client = crate::PolicyViewHelperClient::new(&env, &contract_id);
 
-    let view: SpendingLimitView = client.get_spending_limit_state(&account_addr, 1);
+    let view: SpendingLimitView = client.get_spending_limit_state(&account_addr, &1);
 
     assert_eq!(view.cap, 10_000_000_000);
     assert_eq!(view.spent_in_window, 2_500_000_000);
@@ -159,7 +162,7 @@ fn test_get_spending_limit_state_no_policy() {
     let contract_id = env.register(crate::PolicyViewHelper, ());
     let client = crate::PolicyViewHelperClient::new(&env, &contract_id);
 
-    let result = client.try_get_spending_limit_state(&account_addr, 1);
+    let result = client.try_get_spending_limit_state(&account_addr, &1);
     assert!(result.is_err(), "expected error but got Ok");
 }
 
@@ -175,7 +178,7 @@ fn test_get_spending_limit_state_no_matching_policy() {
     let contract_id = env.register(crate::PolicyViewHelper, ());
     let client = crate::PolicyViewHelperClient::new(&env, &contract_id);
 
-    let result = client.try_get_spending_limit_state(&account_addr, 1);
+    let result = client.try_get_spending_limit_state(&account_addr, &1);
     assert!(result.is_err(), "expected error but got Ok");
 }
 
@@ -193,16 +196,18 @@ fn test_get_spending_limit_state_unsupported_context() {
             &[0u8; 32],
         )),
         name: String::from_str(&env, "create-rule"),
-        valid_until: None,
         signers: Vec::new(&env),
+        signer_ids: Vec::new(&env),
         policies: Vec::from_array(&env, [policy_addr]),
+        policy_ids: Vec::new(&env),
+        valid_until: None,
     };
     let account_addr = deploy_mock_smart_account(&env, &create_contract_rule);
 
     let contract_id = env.register(crate::PolicyViewHelper, ());
     let client = crate::PolicyViewHelperClient::new(&env, &contract_id);
 
-    let result = client.try_get_spending_limit_state(&account_addr, 2);
+    let result = client.try_get_spending_limit_state(&account_addr, &2);
     assert!(result.is_err(), "expected error but got Ok");
 }
 
@@ -211,6 +216,9 @@ fn test_get_spending_limit_state_unsupported_context() {
 #[test]
 fn test_get_spending_limit_state_with_history() {
     let env = Env::default();
+    // Set a realistic ledger sequence so the relative offsets below don't
+    // underflow the test environment's default (very low) sequence.
+    env.ledger().set_sequence_number(200_000);
     let current_ledger = env.ledger().sequence();
 
     let mut data = default_spending_limit_data(&env);
@@ -232,7 +240,7 @@ fn test_get_spending_limit_state_with_history() {
     let contract_id = env.register(crate::PolicyViewHelper, ());
     let client = crate::PolicyViewHelperClient::new(&env, &contract_id);
 
-    let view: SpendingLimitView = client.get_spending_limit_state(&account_addr, 1);
+    let view: SpendingLimitView = client.get_spending_limit_state(&account_addr, &1);
 
     assert_eq!(view.spent_in_window, 2_500_000_000);
     // window_started_ledger should equal the earliest entry's ledger sequence
@@ -243,7 +251,7 @@ fn test_get_spending_limit_state_with_history() {
 // OZ Serialization Compatibility Tests
 //
 // These tests verify that our mirror types (defined in `types.rs`) can
-// correctly decode data serialized by the real `stellar-accounts` v0.7.1
+// correctly decode data serialized by the real `stellar-accounts` v0.7.2
 // types.  This catches field-order or memory-layout mismatches between
 // the OZ `#[contracttype]` structs and our local mirrors.
 //
@@ -255,7 +263,7 @@ fn test_get_spending_limit_state_with_history() {
 mod oz_serialization_compat {
     use soroban_sdk::{testutils::Address as _, Address, Env, IntoVal, TryFromVal, Val, Vec};
 
-    // Import the REAL stellar-accounts v0.7.1 types, aliased to avoid name
+    // Import the REAL stellar-accounts v0.7.2 types, aliased to avoid name
     // collisions with our mirror types.
     use stellar_accounts::policies::spending_limit::{
         SpendingLimitData as RealData,
@@ -286,7 +294,7 @@ mod oz_serialization_compat {
         let real_data = RealData {
             spending_limit: 10_000_000_000i128,
             period_ledgers: 17280_u32,
-            spending_history: Vec::from_array(&env, [real_entry]),
+            spending_history: Vec::from_array(&env, [real_entry.clone()]),
             cached_total_spent: 1_000_000_000i128,
         };
 
@@ -296,7 +304,7 @@ mod oz_serialization_compat {
         // Deserialize using our mirror type
         let our_data: OurData = match OurData::try_from_val(&env, &val) {
             Ok(d) => d,
-            Err(()) => panic!("Our SpendingLimitData mirror failed to decode real OZ data"),
+            Err(_) => panic!("Our SpendingLimitData mirror failed to decode real OZ data"),
         };
 
         // Verify all fields match
@@ -322,9 +330,11 @@ mod oz_serialization_compat {
             id: 42_u32,
             context_type: RealContextRuleType::CallContract(Address::generate(&env)),
             name: soroban_sdk::String::from_str(&env, "test-rule"),
-            valid_until: Some(200_000_u32),
             signers: Vec::new(&env),
-            policies: Vec::from_array(&env, [policy_addr]),
+            signer_ids: Vec::new(&env),
+            policies: Vec::from_array(&env, [policy_addr.clone()]),
+            policy_ids: Vec::new(&env),
+            valid_until: Some(200_000_u32),
         };
 
         // Serialize using the real OZ type
@@ -333,7 +343,7 @@ mod oz_serialization_compat {
         // Deserialize using our mirror type
         let our_rule: OurContextRule = match OurContextRule::try_from_val(&env, &val) {
             Ok(r) => r,
-            Err(()) => panic!("Our ContextRule mirror failed to decode real OZ ContextRule"),
+            Err(_) => panic!("Our ContextRule mirror failed to decode real OZ ContextRule"),
         };
 
         // Verify fields match
@@ -367,7 +377,7 @@ mod oz_serialization_compat {
         let val: Val = real_entry.into_val(&env);
         let our_entry: OurEntry = match OurEntry::try_from_val(&env, &val) {
             Ok(e) => e,
-            Err(()) => panic!("Our SpendingEntry mirror failed to decode real OZ SpendingEntry"),
+            Err(_) => panic!("Our SpendingEntry mirror failed to decode real OZ SpendingEntry"),
         };
 
         assert_eq!(our_entry.amount, real_entry.amount);
