@@ -71,8 +71,8 @@ spendguard-contract/
 | Component | Version |
 |---|---|
 | Rust edition | 2021 |
-| `soroban-sdk` | 27.0.3 (latest stable) |
-| `stellar-accounts` | =0.7.1 (pinned) |
+| `soroban-sdk` | ^26.1.0 (resolves 26.1.1) |
+| `stellar-accounts` | =0.7.2 (pinned) |
 | WASM target | `wasm32v1-none` |
 | Rust toolchain | stable (matching OZ) |
 
