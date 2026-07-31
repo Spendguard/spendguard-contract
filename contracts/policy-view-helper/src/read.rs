@@ -27,10 +27,10 @@ pub fn get_spending_limit_state(
     // Step 2: Verify the context rule's type is compatible with the
     // `spending_limit` policy.
     // ------------------------------------------------------------------
-    if !matches!(context_rule.context_type, ContextRuleType::CallContract(_)) {
-        if matches!(context_rule.context_type, ContextRuleType::CreateContract(_)) {
-            return Err(PolicyViewError::UnsupportedContextType);
-        }
+    if !matches!(context_rule.context_type, ContextRuleType::CallContract(_))
+        && matches!(context_rule.context_type, ContextRuleType::CreateContract(_))
+    {
+        return Err(PolicyViewError::UnsupportedContextType);
     }
 
     // ------------------------------------------------------------------
