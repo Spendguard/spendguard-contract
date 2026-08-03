@@ -5,7 +5,7 @@ versioned interface for querying an
 [OpenZeppelin `stellar-accounts`](https://github.com/OpenZeppelin/stellar-contracts)
 smart account's `spending_limit` policy state.
 
-This is a component of the [SpendGuard](https://github.com/spendguard/spendguard)
+This is a component of the [SpendGuard](https://github.com/smog123/spendguard-app)
 monitoring and alerting layer for x402 agentic payments on Stellar.
 
 ## What it does
@@ -85,6 +85,17 @@ stellar contract build
 # Run integration tests
 cargo test --workspace
 ```
+
+## Deployment
+
+The contract is currently deployed on **Stellar testnet**:
+
+| Network | Contract ID |
+|---|---|
+| Testnet | `CCAM4NRAUB6SO3XLL2SRZQEHSOUYQGDKGNPCUIQ5KKI2S6QKWC2VN6NX` |
+
+Operators deploying their own instance (e.g. to a different network) would
+replace this with the contract ID of their own deployment.
 
 ## Dependencies
 
