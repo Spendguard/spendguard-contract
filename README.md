@@ -5,7 +5,7 @@ versioned interface for querying an
 [OpenZeppelin `stellar-accounts`](https://github.com/OpenZeppelin/stellar-contracts)
 smart account's `spending_limit` policy state.
 
-This is a component of the [SpendGuard](https://github.com/smog123/spendguard-app)
+This is a component of the [SpendGuard](https://github.com/Spendguard/spendguard-app)
 monitoring and alerting layer for x402 agentic payments on Stellar.
 
 ## What it does
