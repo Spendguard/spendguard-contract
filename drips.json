@@ -1,0 +1,12 @@
+{
+  "name": "SpendGuard Contract",
+  "description": "Read-only Soroban helper contract querying OpenZeppelin stellar-accounts spending limit policy state.",
+  "dripsWaveEnabled": true,
+  "repository": "https://github.com/Spendguard/spendguard-contract",
+  "ecosystem": "Stellar",
+  "maintainers": [
+    {
+      "github": "Spendguard"
+    }
+  ]
+}
