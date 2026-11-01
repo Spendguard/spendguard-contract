@@ -137,9 +137,9 @@ fn default_context_rule(env: &Env, policy_addrs: Vec<Address>) -> ContextRule {
 /// Each other branch panics and names what actually happened. `assert!(x.is_err())`
 /// accepted all four, and any of the three error variants for any failure mode —
 /// which is how #1 stayed green.
-fn policy_view_error(
+fn policy_view_error<T: core::fmt::Debug>(
     result: Result<
-        Result<SpendingLimitView, soroban_sdk::ConversionError>,
+        Result<T, soroban_sdk::ConversionError>,
         Result<PolicyViewError, soroban_sdk::InvokeError>,
     >,
 ) -> PolicyViewError {
@@ -159,14 +159,19 @@ fn policy_view_error(
 // Tests
 // ──────────────────────────────────────────────────────────────────────────
 
-/// `get_version` always returns 1.
+/// `get_version` always returns 2.
+///
+/// Bumped from 1 by #5: `get_spending_limit_state` can now answer
+/// `MultipleSpendingLimitPolicies`, and
+/// `get_spending_limit_policy_views` was added. The indexer must read this
+/// before assuming a single view describes the account's limit.
 #[test]
 fn test_get_version() {
     let env = Env::default();
     let contract_id = env.register(crate::PolicyViewHelper, ());
     let client = crate::PolicyViewHelperClient::new(&env, &contract_id);
 
-    assert_eq!(client.get_version(), 1);
+    assert_eq!(client.get_version(), 2);
 }
 
 /// Positive case: spending limit policy installed with data.
@@ -350,6 +355,204 @@ fn test_get_spending_limit_state_with_history() {
     assert_eq!(view.spent_in_window, 2_500_000_000);
     // window_started_ledger should equal the earliest entry's ledger sequence
     assert_eq!(view.window_started_ledger, current_ledger - 1000);
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// More than one spending_limit policy on a rule
+//
+// OZ lets a context rule carry several policies, and two `spending_limit`
+// policies with different caps is a legal configuration. The helper used to
+// return the first policy that answered, which is the account's storage order
+// rather than anything about the limits: with caps of 1 000 and 100 000 the
+// dashboard could display the loose one at 40 % while the tight one was the
+// limit actually binding the next spend.
+//
+// `get_spending_limit_policy_views` reports every responding policy, and
+// `get_spending_limit_state` refuses to pick.
+// ──────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod multiple_policies {
+    use super::{
+        default_context_rule, default_spending_limit_data, deploy_mock_other_policy,
+        deploy_mock_smart_account, deploy_mock_spending_limit_policy, policy_view_error,
+        SpendingLimitData,
+    };
+    use crate::types::PolicyViewError;
+    use soroban_sdk::{Address, Env, Vec};
+
+    fn data_with_cap(env: &Env, cap: i128, spent: i128) -> SpendingLimitData {
+        let mut data = default_spending_limit_data(env);
+        data.spending_limit = cap;
+        data.cached_total_spent = spent;
+        data
+    }
+
+    /// The two caps are deliberately ordered loose-first in one test and
+    /// tight-first in the other: whichever the account stores first, the single
+    /// view must refuse instead of returning it.
+    fn rule_with_two_limits(
+        env: &Env,
+        first_cap: i128,
+        second_cap: i128,
+    ) -> (Address, Vec<Address>, Address, Address) {
+        let loose = deploy_mock_spending_limit_policy(env, &data_with_cap(env, first_cap, 2_500_000_000));
+        let tight = deploy_mock_spending_limit_policy(
+            env,
+            &data_with_cap(env, second_cap, 250_000_000),
+        );
+        let policies = Vec::from_array(env, [loose.clone(), tight.clone()]);
+        let rule = default_context_rule(env, policies.clone());
+        let account = deploy_mock_smart_account(env, &rule);
+        (account, policies, loose, tight)
+    }
+
+    fn helper<'env>(env: &'env Env) -> crate::PolicyViewHelperClient<'env> {
+        let id = env.register(crate::PolicyViewHelper, ());
+        crate::PolicyViewHelperClient::new(env, &id)
+    }
+
+    #[test]
+    fn single_policy_still_returns_one_view() {
+        let env = Env::default();
+        let policy = deploy_mock_spending_limit_policy(&env, &default_spending_limit_data(&env));
+        let rule = default_context_rule(&env, Vec::from_array(&env, [policy.clone()]));
+        let account = deploy_mock_smart_account(&env, &rule);
+
+        let views = helper(&env).get_spending_limit_policy_views(&account, &1);
+
+        assert_eq!(views.len(), 1);
+        assert_eq!(views.get(0).unwrap().policy, policy);
+        assert_eq!(views.get(0).unwrap().view.cap, 10_000_000_000);
+    }
+
+    #[test]
+    fn every_responding_policy_is_reported_with_its_own_cap() {
+        let env = Env::default();
+        let (account, policies, loose, tight) = rule_with_two_limits(&env, 10_000_000_000, 1_000_000_000);
+
+        let views = helper(&env).get_spending_limit_policy_views(&account, &1);
+
+        assert_eq!(views.len(), 2, "both limits must be visible");
+        // The address is what makes the view actionable; without it a caller
+        // cannot tell which policy produced which cap.
+        assert_eq!(views.get(0).unwrap().policy, loose);
+        assert_eq!(views.get(0).unwrap().view.cap, 10_000_000_000);
+        assert_eq!(views.get(0).unwrap().view.spent_in_window, 2_500_000_000);
+        assert_eq!(views.get(1).unwrap().policy, tight);
+        assert_eq!(views.get(1).unwrap().view.cap, 1_000_000_000);
+        assert_eq!(views.get(1).unwrap().view.spent_in_window, 250_000_000);
+
+        // Both entries keep the policy's own window, not a merged guess.
+        for entry in views.iter() {
+            assert_eq!(entry.view.window_ledgers, 17_280);
+        }
+        assert_eq!(policies.len(), 2);
+    }
+
+    #[test]
+    fn the_single_view_refuses_instead_of_picking_when_two_answer() {
+        let env = Env::default();
+        let (account, _, _, _) = rule_with_two_limits(&env, 10_000_000_000, 1_000_000_000);
+
+        let result = helper(&env).try_get_spending_limit_state(&account, &1);
+
+        assert_eq!(
+            policy_view_error(result),
+            PolicyViewError::MultipleSpendingLimitPolicies,
+            "returning either policy is the bug; the helper must not choose"
+        );
+    }
+
+    /// The old code returned `policies[first answering]`. Reversing the rule's
+    /// vector therefore flipped the reported cap. The refusal has to be
+    /// order-independent, so the same expectation holds on the reversed rule.
+    #[test]
+    fn refusing_does_not_depend_on_the_policies_vector_order() {
+        let env = Env::default();
+        let tight = deploy_mock_spending_limit_policy(&env, &data_with_cap(&env, 1_000_000_000, 250_000_000));
+        let loose = deploy_mock_spending_limit_policy(
+            &env,
+            &data_with_cap(&env, 10_000_000_000, 2_500_000_000),
+        );
+        let rule = default_context_rule(&env, Vec::from_array(&env, [tight.clone(), loose.clone()]));
+        let account = deploy_mock_smart_account(&env, &rule);
+
+        let client = helper(&env);
+
+        assert_eq!(
+            policy_view_error(client.try_get_spending_limit_state(&account, &1)),
+            PolicyViewError::MultipleSpendingLimitPolicies,
+        );
+
+        let views = client.get_spending_limit_policy_views(&account, &1);
+        // Enumeration still follows the rule's own order — documented, not
+        // meaningful — and each entry is labelled, so the order cannot be
+        // mistaken for a ranking.
+        assert_eq!(views.get(0).unwrap().policy, tight);
+        assert_eq!(views.get(1).unwrap().policy, loose);
+    }
+
+    /// A rule carrying one spending-limit policy and one unrelated policy is
+    /// the common real configuration; the unrelated one must not force a
+    /// refusal.
+    #[test]
+    fn non_responding_policies_do_not_count_as_extra_limits() {
+        let env = Env::default();
+        let limit = deploy_mock_spending_limit_policy(&env, &default_spending_limit_data(&env));
+        let other = deploy_mock_other_policy(&env);
+        let rule = default_context_rule(&env, Vec::from_array(&env, [other, limit.clone()]));
+        let account = deploy_mock_smart_account(&env, &rule);
+
+        let client = helper(&env);
+        let view = client.get_spending_limit_state(&account, &1);
+
+        assert_eq!(view.cap, 10_000_000_000);
+        assert_eq!(
+            client.get_spending_limit_policy_views(&account, &1).get(0).unwrap().policy,
+            limit
+        );
+    }
+
+    #[test]
+    fn the_multi_view_call_keeps_the_same_guards_as_the_single_one() {
+        let env = Env::default();
+        let client = helper(&env);
+
+        // Step 1: not a smart account at all.
+        let not_an_account = deploy_mock_other_policy(&env);
+        assert_eq!(
+            policy_view_error(client.try_get_spending_limit_policy_views(&not_an_account, &1)),
+            PolicyViewError::AccountNotFound,
+        );
+
+        // Step 2: a `Default` rule with a real limit attached is still rejected
+        // rather than enumerated.
+        let limit = deploy_mock_spending_limit_policy(&env, &default_spending_limit_data(&env));
+        let default_rule = crate::types::ContextRule {
+            id: 3,
+            context_type: crate::types::ContextRuleType::Default,
+            name: soroban_sdk::String::from_str(&env, "default-rule"),
+            signers: Vec::new(&env),
+            signer_ids: Vec::new(&env),
+            policies: Vec::from_array(&env, [limit]),
+            policy_ids: Vec::new(&env),
+            valid_until: None,
+        };
+        let account = deploy_mock_smart_account(&env, &default_rule);
+        assert_eq!(
+            policy_view_error(client.try_get_spending_limit_policy_views(&account, &3)),
+            PolicyViewError::UnsupportedContextType,
+        );
+
+        // Step 3: nothing answered.
+        let empty_rule = default_context_rule(&env, Vec::new(&env));
+        let account = deploy_mock_smart_account(&env, &empty_rule);
+        assert_eq!(
+            policy_view_error(client.try_get_spending_limit_policy_views(&account, &1)),
+            PolicyViewError::NoSpendingLimitPolicyInstalled,
+        );
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────

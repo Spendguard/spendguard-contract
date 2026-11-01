@@ -26,7 +26,7 @@ It **never holds funds, never writes state, and never sits in the payment path**
 | `policy-view-helper` **is** | `policy-view-helper` **never** |
 |---|---|
 | ✅ A read-only on-chain query wrapper | ❌ Holds, moves, or signs for funds |
-| ✅ A versioned public interface (`WASM_VERSION = 1`) | ❌ Writes storage or emits events |
+| ✅ A versioned public interface (`WASM_VERSION = 2`) | ❌ Writes storage or emits events |
 | ✅ Two cross-contract reads per query | ❌ Blocks, freezes, or enforces anything |
 | ✅ Raw ledger-accurate policy values | ❌ Converts ledgers to wall-clock on-chain |
 
@@ -40,7 +40,7 @@ Smart accounts built on OpenZeppelin's framework declare spending-limit guardrai
 
 `policy-view-helper` collapses that into one call:
 
-- 📖 **Two functions, one purpose** — a version probe and a policy-state read, nothing else.
+- 📖 **Three functions, one purpose** — a version probe, the policy-state read, and the per-policy enumeration that read needs when a rule carries more than one limit.
 - 🔗 **Cross-contract reads, zero state** — every query resolves addresses on-chain at call time; nothing is stored, cached, or remembered.
 - 🧮 **Raw on-chain values** — returns precise stroop amounts and ledger sequences; wall-clock conversion is left to the indexer, which has access to Soroban RPC close-time data.
 - 🔒 **Versioned for indexers** — `get_version` lets the [SpendGuard indexer](https://github.com/Spendguard/spendguard-app) fail loudly instead of silently mis-reading a changed API.
@@ -65,18 +65,49 @@ sequenceDiagram
         VH->>PL: get_spending_limit_data(rule_id, account)
         alt Policy returns valid SpendingLimitData
             PL-->>VH: SpendingLimitData { limit, period, history, spent }
-            VH-->>IX: SpendingLimitView (raw ledger-accurate values)
+            VH->>VH: Collect (policy, SpendingLimitView) — raw ledger-accurate values
         end
     end
-    Note over VH: No policy matched → PolicyViewError
+    alt Exactly one policy answered
+        VH-->>IX: SpendingLimitView
+    else More than one answered
+        VH-->>IX: PolicyViewError::MultipleSpendingLimitPolicies
+    else None answered
+        VH-->>IX: PolicyViewError::NoSpendingLimitPolicyInstalled
+    end
 ```
 
 ### Public interface
 
 | Function | Signature | Returns |
 |---|---|---|
-| `get_version` | `() -> u32` | `1` — WASM version marker for indexer compatibility checks |
+| `get_version` | `() -> u32` | `2` — WASM version marker for indexer compatibility checks |
 | `get_spending_limit_state` | `(account: Address, context_rule_id: u32)` | `Result<SpendingLimitView, PolicyViewError>` |
+| `get_spending_limit_policy_views` | `(account: Address, context_rule_id: u32)` | `Result<Vec<SpendingLimitPolicyView>, PolicyViewError>` |
+
+### More than one `spending_limit` policy on a rule
+
+An OZ context rule can carry several policies, and nothing stops two of them
+being `spending_limit` with different caps. Until version 2 the helper returned
+the **first policy that answered**, which is the account's storage order rather
+than anything about the limits: with caps of 1 000 and 100 000 the dashboard
+could render the loose one at 40 % used while the tight one was the limit that
+actually blocked the next spend.
+
+Version 2 splits the two questions:
+
+- `get_spending_limit_policy_views` enumerates every responding policy, each
+  labelled with the contract that reported it, so the caller can compute
+  utilisation per limit and surface the worst.
+- `get_spending_limit_state` keeps its shape — one `SpendingLimitView`, same
+  fields — and answers `MultipleSpendingLimitPolicies` instead of choosing.
+  Which limit "binds" depends on what the caller is asking (smallest remaining
+  headroom and smallest cap disagree once the windows differ), and a read helper
+  that picks silently is how a wrong number reaches a treasury dashboard.
+
+Enumeration order follows the rule's own `policies` vector and is **not** a
+ranking; every entry carries its address, so the order never has to be trusted
+to be meaningful.
 
 ### `SpendingLimitView`
 
@@ -94,6 +125,23 @@ pub struct SpendingLimitView {
 }
 ```
 
+### `SpendingLimitPolicyView`
+
+```rust
+#[contracttype]
+pub struct SpendingLimitPolicyView {
+    /// The policy contract that answered `get_spending_limit_data`.
+    pub policy: Address,
+    /// The state that policy reports.
+    pub view: SpendingLimitView,
+}
+```
+
+A struct rather than an `(Address, SpendingLimitView)` tuple, as #1's scope
+suggested: the deployed spec then names both halves and a reader decodes by key
+instead of by position. Decoding by position is how the app ended up looking for
+`window_seconds` on a contract that emitted `window_ledgers`.
+
 `window_started_ledger` is the **minimum** `ledger_sequence` in the policy's
 spending history, not its first element. `stellar-accounts` 0.7.2 keeps that
 vector oldest-first, so the two agree today; reading the minimum means the value
@@ -110,6 +158,7 @@ the mirror types to pin the derivation.
 | `1` | `NoSpendingLimitPolicyInstalled` | No policy on the rule answered `get_spending_limit_data` |
 | `2` | `AccountNotFound` | The smart account rejected the query (rule missing, wrong address) |
 | `3` | `UnsupportedContextType` | The context rule targets a non-transfer context, where `spending_limit` never applies |
+| `4` | `MultipleSpendingLimitPolicies` | More than one policy answered, so no single view describes the limit — only `get_spending_limit_state` returns this |
 
 Every row is named by a test. `policy_view_error(..)` in `test.rs` unwraps the four
 layers of the generated `try_` client's result, so a test fails when the *wrong*
@@ -136,18 +185,26 @@ SpendGuard's whole design is built on a single principle: **the least powerful t
 git clone https://github.com/Spendguard/spendguard-contract.git
 cd spendguard-contract
 stellar contract build     # → target/wasm32v1-none/release/policy_view_helper.wasm
-cargo test --workspace     # 9 tests: 6 behavior + 3 OZ serialization-compat
+cargo test --workspace     # 20 tests: behaviour, OZ serialization-compat,
+                             # window-start ordering, multi-policy
 ```
 
 **Requirements:** Rust `stable` (pinned in `rust-toolchain.toml` with the `wasm32v1-none` target and `rustfmt`/`clippy`/`rust-src` components) and the [Soroban CLI](https://soroban.stellar.org/docs/cli).
 
 ### Deployed instances
 
-| Network | Contract ID | Status |
-|---|---|---|
-| **Stellar Testnet** | `CCAM4NRAUB6SO3XLL2SRZQEHSOUYQGDKGNPCUIQ5KKI2S6QKWC2VN6NX` | Active |
+| Network | Contract ID | `get_version` | Status |
+|---|---|---|---|
+| **Stellar Testnet** | `CCAM4NRAUB6SO3XLL2SRZQEHSOUYQGDKGNPCUIQ5KKI2S6QKWC2VN6NX` | `1` | Active |
 
 This is the ID the [SpendGuard app](https://github.com/Spendguard/spendguard-app) reads via `POLICY_VIEW_HELPER_CONTRACT_ID`.
+
+The published instance is **version 1** — it was deployed before #5, so it does
+not have `get_spending_limit_policy_views` and its `get_spending_limit_state`
+still returns the first policy that answered. `get_version` on the deployed
+contract returns `1`, which is the discrepancy the app's own version probe
+exists to catch; publishing version 2 needs a redeploy (see #7, no documented
+build/optimize/deploy path yet).
 
 ---
 
@@ -160,7 +217,7 @@ spendguard-contract/
 │   │   ├── lib.rs                  # #[contract] entry point + public interface
 │   │   ├── read.rs                 # Cross-contract query implementation
 │   │   ├── types.rs                # SpendingLimitView, errors, OZ mirror types
-│   │   └── test.rs                 # 14 tests: real-OZ round-trips, one
+│   │   └── test.rs                 # 20 tests: real-OZ round-trips, one
 │   │                               #   specific PolicyViewError per failure
 │   │                               #   mode, window-order driven by the policy
 │   └── test_snapshots/             # Soroban snapshot fixtures
@@ -190,7 +247,7 @@ The `stellar-accounts` dependency is **pinned** and only used in tests — the p
 | Command | Description |
 |---|---|
 | `stellar contract build` | Builds the optimized WASM to `target/wasm32v1-none/release/policy_view_helper.wasm` |
-| `cargo test --workspace` | Runs the 14-test suite (positive, negative — each asserting a specific `PolicyViewError` — OZ compatibility, and window-start ordering cases) |
+| `cargo test --workspace` | Runs the 20-test suite (positive, negative — each asserting a specific `PolicyViewError` — OZ compatibility, window-start ordering, and multi-policy cases) |
 | `cargo clippy --workspace --all-targets -- -D warnings` | Lints with warnings denied (CI gate) |
 
 CI (GitHub Actions) runs **Test & Clippy** on every push and pull request to `master`.
@@ -212,6 +269,29 @@ CI (GitHub Actions) runs **Test & Clippy** on every push and pull request to `ma
 - 🌐 Mainnet deployment alongside the app's live-testnet flow
 - ⚡ Batch / multi-rule convenience queries for the indexer
 - 🔐 Independent audit of the narrow cross-contract read path
+
+---
+
+## Changelog
+
+### `WASM_VERSION = 2` — multi-policy rules (#5)
+
+Breaking for a rule that carries more than one `spending_limit` policy; a rule
+with one policy behaves exactly as before.
+
+| Change | What the indexer must do |
+|---|---|
+| `get_spending_limit_state` returns `MultipleSpendingLimitPolicies` (`#4`) instead of the first answering policy | Treat `#4` as *ambiguous*, never as *no policy*. On the deployed v1 contract it cannot appear; on v2 a caller that maps every `Error(Contract, #N)` to "nothing to show" would render an account with two limits as having none |
+| New `get_spending_limit_policy_views` → `Vec<SpendingLimitPolicyView>` | Use it to compute utilisation per policy and surface the tightest; entries carry `policy: Address` so the enumeration order never has to be trusted |
+| `SpendingLimitView` fields unchanged (`cap`, `window_ledgers`, `spent_in_window`, `window_started_ledger`) | Existing decoding keeps working |
+| `get_version` → `2` | Probe it before reading, and fail loudly on a version the decoder has not been checked against |
+
+### `WASM_VERSION = 1`
+
+`get_spending_limit_state` + `get_version`, reading one `spending_limit` policy
+per context rule. The window fields have been ledger-native since commit
+`b4bd728`, which removed the invented 5 s-per-ledger conversion the first draft
+returned.
 
 ---
 
