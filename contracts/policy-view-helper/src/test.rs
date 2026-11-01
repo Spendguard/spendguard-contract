@@ -419,3 +419,213 @@ mod oz_serialization_compat {
         assert_eq!(our_entry.ledger_sequence, real_entry.ledger_sequence);
     }
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// window_started_ledger: ordering
+//
+// `SpendingLimitView::from` used to read `spending_history.first()`, which is
+// only the earliest entry if the policy keeps the vector sorted oldest-first.
+// `stellar-accounts` 0.7.2 does — `enforce` appends with `push_back` and
+// `cleanup_old_entries` prunes from the front, breaking at the first entry
+// still inside the window (a loop that is only correct on a sorted vector) —
+// but that is a detail of someone else's storage layout, and getting it wrong
+// is asymmetric: a flipped order would report the newest spend as the window
+// start, making a limit about to expire look nearly reset.
+//
+// The tests below take the minimum instead, and prove both halves: the view is
+// order-independent, and the real dependency's ordering is what we think it is.
+// ──────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod window_start_ordering {
+    use super::{
+        default_context_rule, default_spending_limit_data, deploy_mock_smart_account,
+        deploy_mock_spending_limit_policy, SpendingEntry,
+    };
+    use soroban_sdk::{
+        auth::{Context, ContractContext},
+        contract, contractimpl, symbol_short,
+        testutils::{Address as _, Ledger as _},
+        Address, Env, IntoVal, String, Vec,
+    };
+
+    use stellar_accounts::policies::spending_limit::{
+        self as oz, SpendingLimitAccountParams, SpendingLimitData as OzData,
+    };
+    use stellar_accounts::smart_account::{
+        ContextRule as OzContextRule, ContextRuleType as OzContextRuleType, Signer as OzSigner,
+    };
+
+    /// The real OZ spending-limit policy state machine, hosted on a contract so
+    /// the helper can reach it through the same cross-contract call the indexer
+    /// makes. Storage belongs to this contract, as it would to a deployed
+    /// policy — nothing here is a hand-built vector.
+    #[contract]
+    pub struct RealSpendingLimitPolicy;
+
+    #[contractimpl]
+    impl RealSpendingLimitPolicy {
+        pub fn get_spending_limit_data(
+            env: Env,
+            context_rule_id: u32,
+            smart_account: Address,
+        ) -> OzData {
+            oz::get_spending_limit_data(&env, context_rule_id, &smart_account)
+        }
+    }
+
+    fn real_rule(env: &Env) -> OzContextRule {
+        OzContextRule {
+            id: 1,
+            context_type: OzContextRuleType::CallContract(Address::generate(env)),
+            name: String::from_str(env, "real-rule"),
+            signers: Vec::new(env),
+            signer_ids: Vec::new(env),
+            policies: Vec::new(env),
+            policy_ids: Vec::new(env),
+            valid_until: None,
+        }
+    }
+
+    fn transfer_context(env: &Env, amount: i128) -> Context {
+        let mut args = Vec::new(env);
+        args.push_back(Address::generate(env).into_val(env));
+        args.push_back(Address::generate(env).into_val(env));
+        args.push_back(amount.into_val(env));
+        Context::Contract(ContractContext {
+            contract: Address::generate(env),
+            fn_name: symbol_short!("transfer"),
+            args,
+        })
+    }
+
+    /// Reads the window start from a policy that is the real OZ code: two
+    /// settlements 70 ledgers apart, and the helper's view must name the older
+    /// one — with cap, window and spent total decoded through our mirror types.
+    #[test]
+    fn window_started_ledger_comes_from_the_real_policy_history() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_sequence_number(200_000);
+
+        let policy = env.register(RealSpendingLimitPolicy, ());
+
+        // The account the helper will query with is also the account the policy
+        // is written under: OZ keys its state by
+        // `AccountContext(smart_account, context_rule_id)`, so installing under a
+        // different address would make the helper read an empty history and prove
+        // nothing.
+        let our_rule = default_context_rule(&env, Vec::from_array(&env, [policy.clone()]));
+        let account = deploy_mock_smart_account(&env, &our_rule);
+
+        let rule = real_rule(&env);
+        let signers = Vec::from_array(&env, [OzSigner::Delegated(Address::generate(&env))]);
+        let params = SpendingLimitAccountParams {
+            spending_limit: 10_000_000,
+            period_ledgers: 1_000,
+        };
+
+        env.as_contract(&policy, || {
+            oz::install(&env, &params, &rule, &account);
+        });
+
+        env.ledger().set_sequence_number(200_050);
+        env.as_contract(&policy, || {
+            oz::enforce(
+                &env,
+                &transfer_context(&env, 1_000_000),
+                &signers,
+                &rule,
+                &account,
+            );
+        });
+
+        env.ledger().set_sequence_number(200_120);
+        env.as_contract(&policy, || {
+            oz::enforce(
+                &env,
+                &transfer_context(&env, 500_000),
+                &signers,
+                &rule,
+                &account,
+            );
+        });
+
+        // The ordering claim, taken from the dependency rather than assumed.
+        let raw = env.as_contract(&policy, || oz::get_spending_limit_data(&env, 1, &account));
+        assert_eq!(raw.spending_history.len(), 2);
+        assert_eq!(
+            raw.spending_history.get(0).unwrap().ledger_sequence,
+            200_050,
+            "stellar-accounts 0.7.2 retains the oldest settlement first"
+        );
+        assert_eq!(
+            raw.spending_history.get(1).unwrap().ledger_sequence,
+            200_120
+        );
+
+        let helper = env.register(crate::PolicyViewHelper, ());
+        let view = crate::PolicyViewHelperClient::new(&env, &helper)
+            .get_spending_limit_state(&account, &1);
+
+        assert_eq!(view.cap, 10_000_000);
+        assert_eq!(view.window_ledgers, 1_000);
+        assert_eq!(view.spent_in_window, 1_500_000);
+        assert_eq!(view.window_started_ledger, 200_050);
+    }
+
+    /// The same read against a history in an order the current dependency never
+    /// produces. `first()` would answer 199_500 — the newest-but-one spend, a
+    /// window that looks like it is about to reopen when it is about to close.
+    #[test]
+    fn window_started_ledger_ignores_history_order() {
+        let env = Env::default();
+        env.ledger().set_sequence_number(200_000);
+
+        let mut data = default_spending_limit_data(&env);
+        data.spending_history = Vec::from_array(
+            &env,
+            [
+                SpendingEntry {
+                    amount: 1_000_000,
+                    ledger_sequence: 199_500,
+                },
+                SpendingEntry {
+                    amount: 1_000_000,
+                    ledger_sequence: 197_000,
+                },
+                SpendingEntry {
+                    amount: 1_000_000,
+                    ledger_sequence: 199_050,
+                },
+            ],
+        );
+
+        let policy = deploy_mock_spending_limit_policy(&env, &data);
+        let rule = default_context_rule(&env, Vec::from_array(&env, [policy]));
+        let account = deploy_mock_smart_account(&env, &rule);
+
+        let helper = env.register(crate::PolicyViewHelper, ());
+        let view = crate::PolicyViewHelperClient::new(&env, &helper)
+            .get_spending_limit_state(&account, &1);
+
+        assert_eq!(view.window_started_ledger, 197_000);
+    }
+
+    /// No history at all still means "window start unknown", encoded as 0.
+    #[test]
+    fn empty_history_keeps_window_started_ledger_at_zero() {
+        let env = Env::default();
+        let data = default_spending_limit_data(&env);
+
+        let policy = deploy_mock_spending_limit_policy(&env, &data);
+        let rule = default_context_rule(&env, Vec::from_array(&env, [policy]));
+        let account = deploy_mock_smart_account(&env, &rule);
+
+        let helper = env.register(crate::PolicyViewHelper, ());
+        let view = crate::PolicyViewHelperClient::new(&env, &helper)
+            .get_spending_limit_state(&account, &1);
+
+        assert_eq!(view.window_started_ledger, 0);
+    }
+}
