@@ -111,6 +111,11 @@ the mirror types to pin the derivation.
 | `2` | `AccountNotFound` | The smart account rejected the query (rule missing, wrong address) |
 | `3` | `UnsupportedContextType` | The context rule targets a non-transfer context, where `spending_limit` never applies |
 
+Every row is named by a test. `policy_view_error(..)` in `test.rs` unwraps the four
+layers of the generated `try_` client's result, so a test fails when the *wrong*
+variant comes back — not only when the call fails — which is the distinction that
+let #1 stay green behind `assert!(result.is_err())`.
+
 ---
 
 ## Security posture
@@ -155,8 +160,9 @@ spendguard-contract/
 │   │   ├── lib.rs                  # #[contract] entry point + public interface
 │   │   ├── read.rs                 # Cross-contract query implementation
 │   │   ├── types.rs                # SpendingLimitView, errors, OZ mirror types
-│   │   └── test.rs                 # 13 tests incl. real-OZ round-trips and a
-│   │                               #   window-order test driven by the pinned policy
+│   │   └── test.rs                 # 14 tests: real-OZ round-trips, one
+│   │                               #   specific PolicyViewError per failure
+│   │                               #   mode, window-order driven by the policy
 │   └── test_snapshots/             # Soroban snapshot fixtures
 ├── .github/workflows/ci.yml        # Test & Clippy on every push/PR to master
 ├── rust-toolchain.toml             # Pinned Rust stable + wasm32v1-none target
@@ -184,7 +190,7 @@ The `stellar-accounts` dependency is **pinned** and only used in tests — the p
 | Command | Description |
 |---|---|
 | `stellar contract build` | Builds the optimized WASM to `target/wasm32v1-none/release/policy_view_helper.wasm` |
-| `cargo test --workspace` | Runs the 13-test suite (positive, negative, OZ compatibility, and window-start ordering cases) |
+| `cargo test --workspace` | Runs the 14-test suite (positive, negative — each asserting a specific `PolicyViewError` — OZ compatibility, and window-start ordering cases) |
 | `cargo clippy --workspace --all-targets -- -D warnings` | Lints with warnings denied (CI gate) |
 
 CI (GitHub Actions) runs **Test & Clippy** on every push and pull request to `master`.

@@ -7,7 +7,7 @@ use soroban_sdk::{
 };
 
 use crate::types::{
-    ContextRule, ContextRuleType,
+    ContextRule, ContextRuleType, PolicyViewError,
     SpendingLimitData, SpendingEntry,
     SpendingLimitView,
 };
@@ -119,6 +119,43 @@ fn default_context_rule(env: &Env, policy_addrs: Vec<Address>) -> ContextRule {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// Error assertions
+// ──────────────────────────────────────────────────────────────────────────
+
+/// The contract error surfaced by a `try_get_spending_limit_state` call.
+///
+/// The generated `try_` client nests four outcomes, and only one of them is a
+/// tested failure mode:
+///
+/// | Shape | Meaning |
+/// |---|---|
+/// | `Ok(Ok(view))` | the helper returned a view |
+/// | `Ok(Err(conv))` | the helper returned, but the client could not decode it |
+/// | `Err(Ok(err))` | the helper ran and returned this `PolicyViewError` |
+/// | `Err(Err(inv))` | the call never produced a contract error (host failure) |
+///
+/// Each other branch panics and names what actually happened. `assert!(x.is_err())`
+/// accepted all four, and any of the three error variants for any failure mode —
+/// which is how #1 stayed green.
+fn policy_view_error(
+    result: Result<
+        Result<SpendingLimitView, soroban_sdk::ConversionError>,
+        Result<PolicyViewError, soroban_sdk::InvokeError>,
+    >,
+) -> PolicyViewError {
+    match result {
+        Ok(Ok(view)) => panic!("expected a PolicyViewError, got Ok({view:?})"),
+        Ok(Err(conversion)) => {
+            panic!("helper returned data the client could not decode: {conversion:?}")
+        }
+        Err(Ok(contract_error)) => contract_error,
+        Err(Err(invoke_error)) => {
+            panic!("expected a PolicyViewError, got invoke error {invoke_error:?}")
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // Tests
 // ──────────────────────────────────────────────────────────────────────────
 
@@ -152,7 +189,8 @@ fn test_get_spending_limit_state_positive() {
     assert_eq!(view.window_started_ledger, 0);
 }
 
-/// Negative case: no policy installed on the context rule.
+/// Negative case: the context rule exists but carries no policies at all,
+/// so nothing can answer `get_spending_limit_data`.
 #[test]
 fn test_get_spending_limit_state_no_policy() {
     let env = Env::default();
@@ -163,11 +201,14 @@ fn test_get_spending_limit_state_no_policy() {
     let client = crate::PolicyViewHelperClient::new(&env, &contract_id);
 
     let result = client.try_get_spending_limit_state(&account_addr, &1);
-    assert!(result.is_err(), "expected error but got Ok");
+    assert_eq!(
+        policy_view_error(result),
+        PolicyViewError::NoSpendingLimitPolicyInstalled,
+    );
 }
 
-/// Negative case: policies exist but none expose
-/// `get_spending_limit_data`.
+/// Negative case: policies exist but none exposes
+/// `get_spending_limit_data`, so the policy loop exhausts without a reply.
 #[test]
 fn test_get_spending_limit_state_no_matching_policy() {
     let env = Env::default();
@@ -179,10 +220,34 @@ fn test_get_spending_limit_state_no_matching_policy() {
     let client = crate::PolicyViewHelperClient::new(&env, &contract_id);
 
     let result = client.try_get_spending_limit_state(&account_addr, &1);
-    assert!(result.is_err(), "expected error but got Ok");
+    assert_eq!(
+        policy_view_error(result),
+        PolicyViewError::NoSpendingLimitPolicyInstalled,
+    );
 }
 
-/// Negative case: context rule type is `CreateContract`.
+/// Negative case for `AccountNotFound`: the address handed in as the smart
+/// account is a real contract that does not implement `get_context_rule`, so
+/// step 1 fails before any policy is consulted. Nothing else in the suite
+/// produced this variant — the error existed untested.
+#[test]
+fn test_get_spending_limit_state_account_not_found() {
+    let env = Env::default();
+    let not_an_account = deploy_mock_other_policy(&env);
+
+    let contract_id = env.register(crate::PolicyViewHelper, ());
+    let client = crate::PolicyViewHelperClient::new(&env, &contract_id);
+
+    let result = client.try_get_spending_limit_state(&not_an_account, &1);
+    assert_eq!(
+        policy_view_error(result),
+        PolicyViewError::AccountNotFound,
+    );
+}
+
+/// Negative case: context rule type is `CreateContract`, which can never
+/// carry a spending limit, so the guard answers `UnsupportedContextType`
+/// rather than reaching the policy loop.
 #[test]
 fn test_get_spending_limit_state_unsupported_context() {
     let env = Env::default();
@@ -208,7 +273,10 @@ fn test_get_spending_limit_state_unsupported_context() {
     let client = crate::PolicyViewHelperClient::new(&env, &contract_id);
 
     let result = client.try_get_spending_limit_state(&account_addr, &2);
-    assert!(result.is_err(), "expected error but got Ok");
+    assert_eq!(
+        policy_view_error(result),
+        PolicyViewError::UnsupportedContextType,
+    );
 }
 
 /// Regression: a `Default` context rule with a `spending_limit` policy
@@ -240,9 +308,11 @@ fn test_get_spending_limit_state_default_context_is_unsupported() {
     let client = crate::PolicyViewHelperClient::new(&env, &contract_id);
 
     let result = client.try_get_spending_limit_state(&account_addr, &3);
-    assert!(
-        result.is_err(),
-        "a Default context rule must not resolve to a spending limit view"
+    assert_eq!(
+        policy_view_error(result),
+        PolicyViewError::UnsupportedContextType,
+        "a Default context rule must be rejected by the context guard, not by \
+         the policy loop"
     );
 }
 
