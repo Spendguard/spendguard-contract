@@ -90,6 +90,8 @@ and error numbers included — is committed at
 [`specs/policy-view-helper.txt`](specs/policy-view-helper.txt) and CI rebuilds and
 diffs it on every PR. Regenerate it with `make spec-file`.
 
+The file is not decoration: the [app](https://github.com/Spendguard/spendguard-app) vendors a copy of it and its SDK test suite asserts, from that copy, the ScMap keys and types its decoder looks up, the `PolicyViewError` ordinals it maps to variant names, and the arity of each function it simulates. Change an entrypoint here without regenerating the file and CI fails here; change it and regenerate, and the app's pin fails there. Both halves of a broken contract are covered by a gate rather than by a release note.
+
 ### More than one `spending_limit` policy on a rule
 
 An OZ context rule can carry several policies, and nothing stops two of them
