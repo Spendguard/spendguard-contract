@@ -184,29 +184,102 @@ SpendGuard's whole design is built on a single principle: **the least powerful t
 ```bash
 git clone https://github.com/Spendguard/spendguard-contract.git
 cd spendguard-contract
-stellar contract build     # → target/wasm32v1-none/release/policy_view_helper.wasm
-cargo test --workspace     # 20 tests: behaviour, OZ serialization-compat,
-                             # window-start ordering, multi-policy
+make build             # → target/wasm32v1-none/release/policy_view_helper.wasm
+make check             # 20 tests + clippy -D warnings, i.e. what CI runs
+cargo test --workspace # if you would rather not go through make
 ```
 
-**Requirements:** Rust `stable` (pinned in `rust-toolchain.toml` with the `wasm32v1-none` target and `rustfmt`/`clippy`/`rust-src` components) and the [Soroban CLI](https://soroban.stellar.org/docs/cli).
+**Requirements:** Rust `stable` (pinned in `rust-toolchain.toml` with the `wasm32v1-none` target and `rustfmt`/`clippy`/`rust-src` components) and the [Soroban CLI](https://soroban.stellar.org/docs/cli) ≥ 25.2. See [Build & deploy](#build--deploy) for why `make build` wraps `stellar contract build` rather than `cargo build`.
 
 ### Deployed instances
 
-| Network | Contract ID | `get_version` | Status |
-|---|---|---|---|
-| **Stellar Testnet** | `CCAM4NRAUB6SO3XLL2SRZQEHSOUYQGDKGNPCUIQ5KKI2S6QKWC2VN6NX` | `1` | Active |
+| Network | Contract ID | `get_version` | WASM sha256 | Status |
+|---|---|---|---|---|
+| **Stellar Testnet** | `CCAM4NRAUB6SO3XLL2SRZQEHSOUYQGDKGNPCUIQ5KKI2S6QKWC2VN6NX` | `1` | `ff125048e43d9e0f1139b3b89a348ac3916342cf9825b0fbc112d68b17735139` | Active |
 
-This is the ID the [SpendGuard app](https://github.com/Spendguard/spendguard-app) reads via `POLICY_VIEW_HELPER_CONTRACT_ID`.
+This is the ID the [SpendGuard app](https://github.com/Spendguard/spendguard-app) reads via `POLICY_VIEW_HELPER_CONTRACT_ID`. Neither row is a claim you have to take on faith: `make verify` downloads the WASM living at that address, hashes it, and diffs the interface it publishes against the interface of this checkout.
 
-The published instance is **version 1** — it was deployed before #5, so it does
-not have `get_spending_limit_policy_views` and its `get_spending_limit_state`
-still returns the first policy that answered. `get_version` on the deployed
-contract returns `1`, which is the discrepancy the app's own version probe
-exists to catch; publishing version 2 needs a redeploy (see #7, no documented
-build/optimize/deploy path yet).
+On current `master`, `make verify` prints:
+
+```
+built       6190f5a1c94d866b2b72b0f4d841ca2ca609a29519afb33d17d573505b52d876
+deployed    ff125048e43d9e0f1139b3b89a348ac3916342cf9825b0fbc112d68b17735139
+README says ff125048e43d9e0f1139b3b89a348ac3916342cf9825b0fbc112d68b17735139
+DIFFERS: the published instance was built from other source — see README 'Deployed instances'
+SPEC: DIFFERENT — diff target/spec.built.txt against target/spec.deployed.txt; the deployed instance is not the contract this README documents
+```
+
+and that diff is exactly the three things #5 added — `get_spending_limit_policy_views`, the `SpendingLimitPolicyView` struct, and `MultipleSpendingLimitPolicies = 4`. So the live address runs the **pre-#5** helper: no enumeration, no refusal, `get_spending_limit_state` still returns the first policy that answered. `get_version` returning `1` says the same thing from inside the contract, and catching that discrepancy is precisely why the app probes the version instead of assuming it.
+
+Two things that check does **not** establish, stated plainly rather than glossed:
+
+- **The published bytes are not reproducible from this history.** `b74a40d` — the commit whose spec matches the deployed instance exactly — rebuilds to `f5167a00513568d82c417c3bf93e06e3355aea893789272bd0522262163d1756`, not `ff125048…`, with the toolchain this repo pins. No commit here has been shown to produce the deployed WASM, so the hash is a fact about the chain rather than a link back to source: what stays checkable is the *interface*, via `make spec-deployed` against `make interface` at any commit.
+- **#2 and #6 are invisible to a spec diff.** Both changed the body of `get_spending_limit_state` without touching a signature, so no comparison of interfaces can say whether the deployed instance carries those fixes. Until a version 2 deploy happens, the honest description of the live testnet helper is "pre-#5 API, fix history unknown from the chain".
 
 ---
+
+## Build & deploy
+
+Run from the repo root. `make` with no target lists every target; `make versions` prints the stellar-cli, `rustc` and `cargo` a build will actually use.
+
+```bash
+make build        # → target/wasm32v1-none/release/policy_view_helper.wasm
+make check        # cargo test --workspace + clippy --all-targets -- -D warnings (the CI gate)
+make hash         # sha256 of the artefact — this is the on-chain WASM id
+make interface    # the contract spec this checkout publishes
+make verify       # build + fetch, then compare hashes and specs against the chain
+make deploy SOURCE_ACCOUNT=<stellar key alias>
+make clean
+```
+
+### `stellar contract build` is the only build that works here
+
+The crate enables the SDK's `experimental_spec_shaking_v2` feature, and only the Soroban CLI drives it correctly:
+
+| What you might reach for | What happens |
+|---|---|
+| `cargo build --release --target wasm32v1-none` | Fails by design: *"soroban-sdk feature 'experimental_spec_shaking_v2' requires building with `stellar contract build` from stellar-cli v25.2.0 or newer"* |
+| `cargo build --release --target wasm32-unknown-unknown` | Rejected by Rust ≥ 1.82; the v1 target is `wasm32v1-none` |
+| `stellar contract optimize` | Deprecated in stellar-cli 25+; `contract build` optimizes by default (`--optimize` is on), so `make optimize` is an alias that prints where the artefact already is |
+| `stellar contract build` | Works, and is what `make build` runs |
+
+`rust-toolchain.toml` pins the toolchain and the `wasm32v1-none` target, so `rustup` installs what it needs on the first `cargo`/`make` invocation. The package is `policy-view-helper` but the cdylib is `policy_view_helper.wasm` — cargo underscores the crate name in the artefact, which is why both spellings appear in the `Makefile`.
+
+### Environment
+
+Everything is a `?=`-defaulted make variable, so it can be set on the command line or in the environment. The names match the app repo's `.env`.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SOROBAN_RPC_URL` | `https://soroban-testnet.stellar.org` | What `fetch`, `verify` and `deploy` talk to |
+| `NETWORK_PASSPHRASE` | `Test SDF Network ; September 2015` | Must match the network above |
+| `NETWORK` | `testnet` | Passed to `stellar contract deploy`; anything else is treated as publishing |
+| `CONTRACT_ID` | the instance in the table above | What `fetch`, `spec-deployed` and `verify` read |
+| `EXPECTED_WASM_HASH` | the sha256 in the table above | `verify` fails if the chain disagrees with the README |
+| `SOURCE_ACCOUNT` | *unset* | A key alias already in `stellar keys ls`. `deploy` refuses to run without it |
+| `ALLOW_MAINNET` | *unset* | Must be `1` before `NETWORK` may be anything but `testnet` |
+
+`SOURCE_ACCOUNT` names a key the Soroban CLI holds in its own config (`stellar keys generate <name>` then `stellar keys fund <name>` for a throwaway testnet account). A secret never belongs in this file, in a target, in a shell history line that gets pasted into an issue, or in a commit — `--auto-sign` with an alias is the whole point.
+
+### Deploy is guarded, on purpose
+
+A read-only helper is still the address the indexer is told to trust, so `make deploy` makes publishing take two deliberate choices:
+
+- No `SOURCE_ACCOUNT` → it stops and says so, rather than guessing which account should pay.
+- `NETWORK` anything other than `testnet` → it refuses unless `ALLOW_MAINNET=1` is also passed, and then prints what it is about to do and waits 5 seconds.
+
+### After a deploy that you intend to publish
+
+`make deploy` prints the new contract ID. The repo then has three records to bring in line, in one PR:
+
+1. `CONTRACT_ID` and `EXPECTED_WASM_HASH` in the `Makefile`.
+2. The **Deployed instances** table above — contract ID, `get_version`, and the sha256 from `make fetch-hash`.
+3. The app's `POLICY_VIEW_HELPER_CONTRACT_ID`, or the testnet address the indexer is configured with.
+
+`make verify` is the check that all three agree: it should print `MATCH: the published instance is this checkout` and `SPEC: identical`. Anything else means the README describes a contract that is not the one running.
+
+---
+
 
 ## Architecture
 
@@ -222,6 +295,7 @@ spendguard-contract/
 │   │                               #   mode, window-order driven by the policy
 │   └── test_snapshots/             # Soroban snapshot fixtures
 ├── .github/workflows/ci.yml        # Test & Clippy on every push/PR to master
+├── Makefile                        # build / check / verify / guarded deploy
 ├── rust-toolchain.toml             # Pinned Rust stable + wasm32v1-none target
 ├── CONTRIBUTING.md · SECURITY.md · drips.json · LICENSE
 └── Cargo.toml                      # Workspace root manifest
@@ -246,11 +320,15 @@ The `stellar-accounts` dependency is **pinned** and only used in tests — the p
 
 | Command | Description |
 |---|---|
-| `stellar contract build` | Builds the optimized WASM to `target/wasm32v1-none/release/policy_view_helper.wasm` |
-| `cargo test --workspace` | Runs the 20-test suite (positive, negative — each asserting a specific `PolicyViewError` — OZ compatibility, window-start ordering, and multi-policy cases) |
+| `make build` (`stellar contract build`) | Builds the optimized WASM to `target/wasm32v1-none/release/policy_view_helper.wasm` |
+| `make check` / `cargo test --workspace` | Runs the 20-test suite (positive, negative — each asserting a specific `PolicyViewError` — OZ compatibility, window-start ordering, and multi-policy cases) |
 | `cargo clippy --workspace --all-targets -- -D warnings` | Lints with warnings denied (CI gate) |
+| `make hash` / `make interface` | The sha256 and the spec of the artefact this checkout produces |
+| `make fetch` / `make fetch-hash` / `make spec-deployed` | The same three readings of the instance that is actually deployed |
+| `make verify` | Compares the two, and fails if the chain no longer matches the hash recorded in the README |
+| `make deploy SOURCE_ACCOUNT=<alias>` | Testnet deploy; refuses to guess an account and refuses any network but `testnet` without `ALLOW_MAINNET=1` |
 
-CI (GitHub Actions) runs **Test & Clippy** on every push and pull request to `master`.
+CI (GitHub Actions) runs **Test & Clippy** on every push and pull request to `master`. It does not build the WASM or touch the network: `make verify` needs an RPC connection, so it is a human/agent step, documented above rather than wired into a job that would silently pass by skipping it.
 
 ---
 
@@ -260,6 +338,7 @@ CI (GitHub Actions) runs **Test & Clippy** on every push and pull request to `ma
 2. **Ledger windows, not wall-clock** — all window fields are ledger sequences; the indexer is responsible for converting them to timestamps using Soroban RPC close-time data.
 3. **Mirror types must track OpenZeppelin** — the production mirror types are verified against `stellar-accounts` 0.7.2; an OZ upgrade requires re-running the compatibility tests and the real-policy window-order test (which asserts the retained history order directly) before the pin moves.
 4. **No events emitted** — indexing still relies on the OZ contracts' own `transfer` / `spending_limit_enforced` events; this contract is query-only.
+5. **The live testnet instance predates #5, and its bytes are not reproducible from this repo** — `make verify` proves both, and [Build & deploy](#build--deploy) explains what a redeploy would cost (a new address, and the app's `POLICY_VIEW_HELPER_CONTRACT_ID` with it). Publishing v2 is one guarded command, not an undocumented incantation any more; it has not been run because the deployed address is shared state.
 
 ---
 
