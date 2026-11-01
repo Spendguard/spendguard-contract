@@ -211,6 +211,41 @@ fn test_get_spending_limit_state_unsupported_context() {
     assert!(result.is_err(), "expected error but got Ok");
 }
 
+/// Regression: a `Default` context rule with a `spending_limit` policy
+/// attached must still be rejected.
+///
+/// The guard used to read `!is_call_contract && is_create_contract`, so a
+/// `Default` rule satisfied neither half, slipped past the check, and the
+/// policy loop happily returned the attached policy's data as if the rule
+/// were a supported transfer context.
+#[test]
+fn test_get_spending_limit_state_default_context_is_unsupported() {
+    let env = Env::default();
+    let policy_addr =
+        deploy_mock_spending_limit_policy(&env, &default_spending_limit_data(&env));
+
+    let default_rule = ContextRule {
+        id: 3,
+        context_type: ContextRuleType::Default,
+        name: String::from_str(&env, "default-rule"),
+        signers: Vec::new(&env),
+        signer_ids: Vec::new(&env),
+        policies: Vec::from_array(&env, [policy_addr]),
+        policy_ids: Vec::new(&env),
+        valid_until: None,
+    };
+    let account_addr = deploy_mock_smart_account(&env, &default_rule);
+
+    let contract_id = env.register(crate::PolicyViewHelper, ());
+    let client = crate::PolicyViewHelperClient::new(&env, &contract_id);
+
+    let result = client.try_get_spending_limit_state(&account_addr, &3);
+    assert!(
+        result.is_err(),
+        "a Default context rule must not resolve to a spending limit view"
+    );
+}
+
 /// Edge case: spending history has entries → `window_started_ledger`
 /// matches the earliest entry's ledger sequence.
 #[test]
