@@ -49,7 +49,9 @@ We follow [Conventional Commits](https://www.conventionalcommits.org/):
 type(scope): description
 ```
 
-Types: `feat`, `fix`, `chore`, `test`, `docs`, `refactor`, `perf`.
+Types: `feat`, `fix`, `chore`, `test`, `docs`, `refactor`, `perf`, `build`, `ci`.
+The last two are for the Makefile and the workflows: this repo's reproducibility
+claims live there, so they get their own prefix rather than hiding under `chore`.
 
 Scope for this repo: `types`, `read`, `workspace`, `deps`.
 
@@ -72,7 +74,13 @@ Examples:
 
 ## Review process
 
-All PRs require at least one approval. The reviewer checks:
+What blocks a merge is CI: both jobs in `.github/workflows/ci.yml` have to be
+green. On top of that, a maintainer reads every PR against this list — approvals
+are not currently *required* by branch protection, so the list is a convention,
+not a gate:
+
 - Correctness of cross-contract call signatures.
 - Proper error handling (no silent failures).
 - Test coverage (positive + negative cases for every function).
+- `specs/policy-view-helper.txt` regenerated when the interface changed, and
+  `WASM_VERSION` bumped with it.
