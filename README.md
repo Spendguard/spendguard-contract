@@ -222,6 +222,8 @@ Two things that check does **not** establish, stated plainly rather than glossed
 - **The published bytes are not reproducible from this history.** `b74a40d` — the commit whose spec matches the deployed instance exactly — rebuilds to `f5167a00513568d82c417c3bf93e06e3355aea893789272bd0522262163d1756`, not `ff125048…`, with the toolchain this repo pins. No commit here has been shown to produce the deployed WASM, so the hash is a fact about the chain rather than a link back to source: what stays checkable is the *interface*, via `make spec-deployed` against `make interface` at any commit.
 - **#2 and #6 are invisible to a spec diff.** Both changed the body of `get_spending_limit_state` without touching a signature, so no comparison of interfaces can say whether the deployed instance carries those fixes. Until a version 2 deploy happens, the honest description of the live testnet helper is "pre-#5 API, fix history unknown from the chain".
 
+What *is* reproducible is `master` itself, and CI now proves it rather than asserting it: the **Build WASM & check pinned interface** job compiles on a GitHub runner with the pinned toolchain and the pinned stellar-cli, prints the sha256 into the run summary, and uploads `policy_view_helper.wasm`. Its first run produced `6190f5a1c94d866b2b72b0f4d841ca2ca609a29519afb33d17d573505b52d876` — the same hash as `make build` on the dev machine that wrote this — so a redeploy's artefact can be tied to a commit by anyone, not only by whoever held the keys.
+
 ---
 
 ## Build & deploy
