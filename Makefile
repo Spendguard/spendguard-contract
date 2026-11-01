@@ -5,6 +5,8 @@
 #
 # Requirements: the toolchain pinned in rust-toolchain.toml (rustup installs it
 # on first cargo invocation) and stellar-cli >= 25.2.0 (`stellar --version`).
+# `spec-file`/`spec-check` are the exception: the pinned spec is CLI-formatted
+# text, so CI uses $(PINNED_STELLAR_CLI) and expects that version locally too.
 # The CLI's build is the one that works here: a bare
 # `cargo build --release --target wasm32v1-none` fails on this crate because the
 # SDK's `experimental_spec_shaking_v2` feature is only driven correctly through
@@ -31,6 +33,17 @@ NETWORK_PASSPHRASE ?= Test SDF Network ; September 2015
 
 STELLAR ?= stellar
 
+# The interface is what the indexer decodes, so it is committed and CI-checked:
+# a PR that changes the public API has to regenerate this file, which is the
+# moment the change becomes visible in review rather than in a broken app.
+SPEC_FILE ?= specs/policy-view-helper.txt
+
+# The pinned spec is text this CLI prints, not text the WASM contains, so the
+# formatter's version is part of the comparison. CI installs exactly this one;
+# `make spec-check` on a different CLI explains the skew instead of leaving you
+# with an unexplained diff.
+PINNED_STELLAR_CLI := 28.1.0
+
 # Name a key already in the CLI's own config (`stellar keys ls` to list,
 # `stellar keys generate <name>` + `stellar keys fund <name>` for a new one) and
 # pass it with SOURCE_ACCOUNT=<name>. The secret never enters this file, a
@@ -38,7 +51,7 @@ STELLAR ?= stellar
 SOURCE_ACCOUNT ?=
 
 .PHONY: help build optimize test clippy check hash interface versions \
-        fetch fetch-hash spec-deployed verify deploy clean
+        fetch fetch-hash spec-deployed spec-file spec-check verify deploy clean
 
 help:
 	@echo "make build            compile to $(WASM) — the artefact you deploy"
@@ -52,6 +65,8 @@ help:
 	@echo "make fetch            download the deployed WASM to $(DEPLOYED_WASM)"
 	@echo "make fetch-hash       sha256 of the deployed WASM"
 	@echo "make spec-deployed    the deployed contract's spec, for diffing against make interface"
+	@echo "make spec-file        rewrite $(SPEC_FILE), the interface CI checks this checkout against"
+	@echo "make spec-check       fail if $(SPEC_FILE) no longer describes the built WASM (the CI gate)"
 	@echo "make verify           build + fetch, then compare hashes and specs"
 	@echo "make deploy SOURCE_ACCOUNT=<key-name>   deploy the built WASM to NETWORK=$(NETWORK)"
 	@echo "make clean"
@@ -77,6 +92,31 @@ hash: build
 
 interface: build
 	@$(STELLAR) contract info interface --wasm $(WASM)
+
+# Regenerate $(SPEC_FILE). CI fails when the built interface no longer matches
+# the committed copy, so the fix is to run this and bump `WASM_VERSION`.
+spec-file: build
+	@mkdir -p $(dir $(SPEC_FILE))
+	@$(STELLAR) contract info interface --wasm $(WASM) > $(SPEC_FILE)
+	@echo "wrote $(SPEC_FILE) — if the interface changed, bump WASM_VERSION in src/lib.rs too"
+
+# The gate CI runs. It compares against a throwaway copy rather than
+# regenerating $(SPEC_FILE) in place, so a failing check leaves the working tree
+# clean and the diff reviewable.
+spec-check: build
+	@test -s $(SPEC_FILE) || { \
+		echo "FAIL: $(SPEC_FILE) is missing or empty — run 'make spec-file' and commit it."; exit 1; }
+	@mkdir -p target
+	@$(STELLAR) contract info interface --wasm $(WASM) > target/spec.checked.txt
+	@if diff -u $(SPEC_FILE) target/spec.checked.txt; then \
+		echo "SPEC: $(SPEC_FILE) describes the built WASM."; \
+	else \
+		echo; \
+		echo "FAIL: this checkout publishes a different interface from the one in $(SPEC_FILE)."; \
+		echo "      Changed the contract? Run 'make spec-file', commit the file, bump WASM_VERSION."; \
+		echo "      Only the formatting differs? Your CLI is $$($(STELLAR) --version 2>/dev/null | head -1), CI uses $(PINNED_STELLAR_CLI)."; \
+		exit 1; \
+	fi
 
 versions:
 	@$(STELLAR) --version
