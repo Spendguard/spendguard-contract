@@ -1,0 +1,13 @@
+# Cargo build output, including the optimized WASM from `stellar contract build`.
+# Resolving `stellar-accounts` and `soroban-sdk` puts this over 1 GB, and it is
+# reproducible with `cargo test --workspace`.
+/target
+
+# Written by the Soroban test host on every `cargo test` run. Regenerated from
+# the tests, so tracking them would only make every test change produce a diff
+# to remember to commit.
+**/test_snapshots/
+
+.idea/
+.vscode/
+.DS_Store
