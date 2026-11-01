@@ -39,6 +39,10 @@ Examples:
 - **Snake case** functions, **PascalCase** types (Soroban conventions).
 - Every public function must have doc comments.
 - Every function must have at least one positive and one negative test.
+- **Negative tests name the error variant.** Use the `policy_view_error(..)`
+  helper in `test.rs` and compare against a `PolicyViewError`, not
+  `assert!(result.is_err())` — `is_err()` passes for any of the three variants
+  and for a call that never reached the contract at all.
 
 ## Review process
 
