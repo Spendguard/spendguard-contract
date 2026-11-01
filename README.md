@@ -94,6 +94,15 @@ pub struct SpendingLimitView {
 }
 ```
 
+`window_started_ledger` is the **minimum** `ledger_sequence` in the policy's
+spending history, not its first element. `stellar-accounts` 0.7.2 keeps that
+vector oldest-first, so the two agree today; reading the minimum means the value
+stays correct if the pinned dependency ever changes its storage layout.
+`window_started_ledger_comes_from_the_real_policy_history` installs and enforces
+through the real OZ policy (dev-dependency) to pin the ordering, and
+`window_started_ledger_ignores_history_order` feeds an unsorted history through
+the mirror types to pin the derivation.
+
 ### Errors
 
 | Code | Error | Meaning |
@@ -146,7 +155,8 @@ spendguard-contract/
 │   │   ├── lib.rs                  # #[contract] entry point + public interface
 │   │   ├── read.rs                 # Cross-contract query implementation
 │   │   ├── types.rs                # SpendingLimitView, errors, OZ mirror types
-│   │   └── test.rs                 # 9 tests incl. real-OZ serialization round-trips
+│   │   └── test.rs                 # 13 tests incl. real-OZ round-trips and a
+│   │                               #   window-order test driven by the pinned policy
 │   └── test_snapshots/             # Soroban snapshot fixtures
 ├── .github/workflows/ci.yml        # Test & Clippy on every push/PR to master
 ├── rust-toolchain.toml             # Pinned Rust stable + wasm32v1-none target
@@ -174,7 +184,7 @@ The `stellar-accounts` dependency is **pinned** and only used in tests — the p
 | Command | Description |
 |---|---|
 | `stellar contract build` | Builds the optimized WASM to `target/wasm32v1-none/release/policy_view_helper.wasm` |
-| `cargo test --workspace` | Runs the 9-test suite (positive, negative, and OZ compatibility cases) |
+| `cargo test --workspace` | Runs the 13-test suite (positive, negative, OZ compatibility, and window-start ordering cases) |
 | `cargo clippy --workspace --all-targets -- -D warnings` | Lints with warnings denied (CI gate) |
 
 CI (GitHub Actions) runs **Test & Clippy** on every push and pull request to `master`.
@@ -185,7 +195,7 @@ CI (GitHub Actions) runs **Test & Clippy** on every push and pull request to `ma
 
 1. **`spending_limit` policy type only** — the helper reads the `spending_limit` policy installed on a transfer-context rule. `simple_threshold` and `weighted_threshold` policies are not queried (yet), and OZ scopes `spending_limit` to transfer contexts by design — an upstream constraint, not a SpendGuard one.
 2. **Ledger windows, not wall-clock** — all window fields are ledger sequences; the indexer is responsible for converting them to timestamps using Soroban RPC close-time data.
-3. **Mirror types must track OpenZeppelin** — the production mirror types are verified against `stellar-accounts` 0.7.2; an OZ upgrade requires re-running the compatibility tests before the pin moves.
+3. **Mirror types must track OpenZeppelin** — the production mirror types are verified against `stellar-accounts` 0.7.2; an OZ upgrade requires re-running the compatibility tests and the real-policy window-order test (which asserts the retained history order directly) before the pin moves.
 4. **No events emitted** — indexing still relies on the OZ contracts' own `transfer` / `spending_limit_enforced` events; this contract is query-only.
 
 ---

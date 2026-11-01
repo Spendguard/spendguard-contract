@@ -28,6 +28,10 @@ pub struct SpendingLimitView {
     /// or `0` if the window has no spending history yet.  The indexer
     /// can look up this ledger's close time via Soroban RPC to
     /// determine the precise window start time.
+    ///
+    /// Derived as the minimum `ledger_sequence` over the history rather
+    /// than the first element, so the value does not depend on how the
+    /// policy orders its vector.
     pub window_started_ledger: u32,
 }
 
@@ -110,10 +114,21 @@ impl From<SpendingLimitData> for SpendingLimitView {
     /// `SpendingLimitView`, preserving all raw OZ values without
     /// wall-clock conversion.
     fn from(data: SpendingLimitData) -> Self {
+        // The oldest entry, not the first one. `stellar-accounts` 0.7.2 keeps
+        // `spending_history` sorted oldest-first — `enforce` appends with
+        // `push_back` and `cleanup_old_entries` prunes with `pop_front`,
+        // breaking at the first entry that is still inside the window, which
+        // only works on a sorted vector — so `first()` happens to be correct
+        // today. It is also a silent dependency on a detail of someone else's
+        // storage layout: if that order ever flipped, the view would report the
+        // *newest* spend as the window start, making an expiring limit look
+        // nearly reset. Taking the minimum costs one pass and is true either
+        // way.
         let window_started_ledger = data
             .spending_history
-            .first()
+            .iter()
             .map(|entry| entry.ledger_sequence)
+            .min()
             .unwrap_or(0);
 
         SpendingLimitView {
