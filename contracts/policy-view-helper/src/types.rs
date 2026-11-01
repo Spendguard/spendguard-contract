@@ -35,6 +35,27 @@ pub struct SpendingLimitView {
     pub window_started_ledger: u32,
 }
 
+/// One `spending_limit` policy on a context rule, identified by the contract
+/// that holds it.
+///
+/// A rule can carry several `spending_limit` policies, and this helper has no
+/// basis for deciding which one binds, so
+/// `get_spending_limit_policy_views` returns one of these per responding
+/// policy and the caller compares them.
+///
+/// A struct rather than an `(Address, SpendingLimitView)` tuple: the deployed
+/// spec then names both halves, and a reader decodes by key instead of by
+/// position. Positional decoding is exactly how the app came to be reading
+/// `window_seconds` from a contract that emitted `window_ledgers`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpendingLimitPolicyView {
+    /// The policy contract that answered `get_spending_limit_data`.
+    pub policy: Address,
+    /// The state that policy currently reports.
+    pub view: SpendingLimitView,
+}
+
 // ---------------------------------------------------------------------------
 // Error types
 // ---------------------------------------------------------------------------
@@ -50,6 +71,10 @@ pub enum PolicyViewError {
     AccountNotFound = 2,
     /// The context rule targets a non-transfer context.
     UnsupportedContextType = 3,
+    /// More than one `spending_limit` policy answered for this rule, so no
+    /// single view can describe the limit. Read
+    /// `get_spending_limit_policy_views` for the full set.
+    MultipleSpendingLimitPolicies = 4,
 }
 
 // ---------------------------------------------------------------------------

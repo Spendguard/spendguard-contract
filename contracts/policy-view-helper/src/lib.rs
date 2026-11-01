@@ -2,10 +2,10 @@
 mod read;
 mod types;
 
-use soroban_sdk::{contract, contractimpl, Address, Env};
-use types::{PolicyViewError, SpendingLimitView};
+use soroban_sdk::{contract, contractimpl, Address, Env, Vec};
+use types::{PolicyViewError, SpendingLimitPolicyView, SpendingLimitView};
 
-const WASM_VERSION: u32 = 1;
+const WASM_VERSION: u32 = 2;
 
 /// A minimal read-only helper contract that provides a stable, versioned
 /// interface for querying an OZ `stellar-accounts` smart account's
@@ -60,21 +60,58 @@ impl PolicyViewHelper {
     ///
     /// # Errors
     ///
-    /// * [`PolicyViewError::NoSpendingLimitPolicyInstalled`] — No
-    ///   `spending_limit` policy is installed on this context rule, or
-    ///   the policy contract didn't respond with valid data.
+    /// * [`PolicyViewError::NoSpendingLimitPolicyInstalled`] — no
+    ///   `spending_limit` policy is installed on this context rule, or none
+    ///   of them answered with valid data.
     /// * [`PolicyViewError::AccountNotFound`] — The smart account
     ///   contract rejected the query (e.g. the context rule doesn't
     ///   exist).
     /// * [`PolicyViewError::UnsupportedContextType`] — The context rule
     ///   targets a non-transfer context, so a `spending_limit` policy
     ///   would never apply there (per OZ's own documented scope limit).
+    /// * [`PolicyViewError::MultipleSpendingLimitPolicies`] — the rule
+    ///   carries more than one `spending_limit` policy, so there is no
+    ///   single answer. Since version 2; before that this returned the
+    ///   first policy that answered, i.e. an arbitrary one.
+    ///   Use [`PolicyViewHelper::get_spending_limit_policy_views`].
     pub fn get_spending_limit_state(
         env: Env,
         account: Address,
         context_rule_id: u32,
     ) -> Result<SpendingLimitView, PolicyViewError> {
         read::get_spending_limit_state(&env, &account, context_rule_id)
+    }
+
+    /// Every `spending_limit` policy on a context rule, each labelled with
+    /// the policy contract that reports it.
+    ///
+    /// Use this instead of [`PolicyViewHelper::get_spending_limit_state`]
+    /// when a rule may carry more than one policy: the single-view call
+    /// refuses to pick one, and the binding limit depends on what the
+    /// caller is asking. Utilisation must be computed per policy here, and
+    /// the worst surfaced.
+    ///
+    /// Ordered by the smart account's own `policies` vector, which carries
+    /// no semantic meaning — do not index into it.
+    ///
+    /// # Arguments
+    ///
+    /// * `account` — The OZ smart account contract address.
+    /// * `context_rule_id` — The context rule ID whose `spending_limit`
+    ///   policies to enumerate.
+    ///
+    /// # Errors
+    ///
+    /// * [`PolicyViewError::NoSpendingLimitPolicyInstalled`] — no policy
+    ///   on the rule answered with spending-limit data.
+    /// * [`PolicyViewError::AccountNotFound`],
+    ///   [`PolicyViewError::UnsupportedContextType`] — as above.
+    pub fn get_spending_limit_policy_views(
+        env: Env,
+        account: Address,
+        context_rule_id: u32,
+    ) -> Result<Vec<SpendingLimitPolicyView>, PolicyViewError> {
+        read::get_spending_limit_policy_views(&env, &account, context_rule_id)
     }
 }
 
