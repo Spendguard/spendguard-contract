@@ -58,7 +58,15 @@ jobs:
       - name: Read the pinned stellar-cli version
         id: cli
         run: |
-          version=$(make --eval='show-pin: ; @echo $(PINNED_STELLAR_CLI)' show-pin)
+          set -euo pipefail
+          version=$(make --eval='show-pin: ; @echo $(PINNED_STELLAR_CLI)' show-pin 2>/dev/null \
+            || sed -n 's/^PINNED_STELLAR_CLI *:= *//p' Makefile)
+          # Empty here would mean the download step asks for releases/download/v/…,
+          # which fails with a 404 that looks nothing like a missing variable.
+          case "$version" in
+            [0-9]*.[0-9]*) ;;
+            *) echo "Could not read PINNED_STELLAR_CLI from the Makefile (got '$version')"; exit 1 ;;
+          esac
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "pinning stellar-cli $version"
 
