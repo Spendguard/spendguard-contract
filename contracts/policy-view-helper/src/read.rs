@@ -24,12 +24,13 @@ pub fn get_spending_limit_state(
     };
 
     // ------------------------------------------------------------------
-    // Step 2: Verify the context rule's type is compatible with the
-    // `spending_limit` policy.
+    // Step 2: Only a `CallContract` context can carry a `spending_limit`
+    // policy. `Default` and `CreateContract` rules must be rejected here:
+    // falling through would query a policy that can never apply to the
+    // rule, and report either a bogus view or a misleading
+    // `NoSpendingLimitPolicyInstalled`.
     // ------------------------------------------------------------------
-    if !matches!(context_rule.context_type, ContextRuleType::CallContract(_))
-        && matches!(context_rule.context_type, ContextRuleType::CreateContract(_))
-    {
+    if !matches!(context_rule.context_type, ContextRuleType::CallContract(_)) {
         return Err(PolicyViewError::UnsupportedContextType);
     }
 

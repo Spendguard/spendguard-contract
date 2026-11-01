@@ -60,7 +60,7 @@ sequenceDiagram
     IX->>VH: simulateContract: get_spending_limit_state(account, rule_id)
     VH->>SA: get_context_rule(rule_id)
     SA-->>VH: ContextRule { context_type, policies: [...] }
-    VH->>VH: Reject CreateContract (non-transfer) context rules
+    VH->>VH: Reject rules whose context_type is not CallContract (Default, CreateContract)
     loop For each policy address in rule
         VH->>PL: get_spending_limit_data(rule_id, account)
         alt Policy returns valid SpendingLimitData
