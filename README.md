@@ -10,7 +10,7 @@
 [![CI](https://github.com/Spendguard/spendguard-contract/actions/workflows/ci.yml/badge.svg)](https://github.com/Spendguard/spendguard-contract/actions/workflows/ci.yml)
 [![Rust](https://img.shields.io/badge/rust-stable-000000?logo=rust&logoColor=white)](rust-toolchain.toml)
 [![Soroban SDK](https://img.shields.io/badge/soroban--sdk-26.1.0-7c3aed?logo=stellar&logoColor=white)](Cargo.toml)
-[![Tests](https://img.shields.io/badge/tests-9%20passing-10b981?logo=rust&logoColor=white)](https://github.com/Spendguard/spendguard-contract/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/badge/tests-20%20passing-10b981?logo=rust&logoColor=white)](https://github.com/Spendguard/spendguard-contract/actions/workflows/ci.yml)
 [![Stellar & Soroban](https://img.shields.io/badge/built%20for-Stellar%20%26%20Soroban-7c3aed?logo=stellar&logoColor=white)](#how-it-works)
 
 </div>
@@ -84,6 +84,11 @@ sequenceDiagram
 | `get_version` | `() -> u32` | `2` — WASM version marker for indexer compatibility checks |
 | `get_spending_limit_state` | `(account: Address, context_rule_id: u32)` | `Result<SpendingLimitView, PolicyViewError>` |
 | `get_spending_limit_policy_views` | `(account: Address, context_rule_id: u32)` | `Result<Vec<SpendingLimitPolicyView>, PolicyViewError>` |
+
+The generated form of that table — the exact spec the WASM publishes, field order
+and error numbers included — is committed at
+[`specs/policy-view-helper.txt`](specs/policy-view-helper.txt) and CI rebuilds and
+diffs it on every PR. Regenerate it with `make spec-file`.
 
 ### More than one `spending_limit` policy on a rule
 
@@ -185,11 +190,12 @@ SpendGuard's whole design is built on a single principle: **the least powerful t
 git clone https://github.com/Spendguard/spendguard-contract.git
 cd spendguard-contract
 make build             # → target/wasm32v1-none/release/policy_view_helper.wasm
-make check             # 20 tests + clippy -D warnings, i.e. what CI runs
+make check             # 20 tests + clippy -D warnings — the first CI job
+make spec-check        # the built WASM still publishes specs/policy-view-helper.txt
 cargo test --workspace # if you would rather not go through make
 ```
 
-**Requirements:** Rust `stable` (pinned in `rust-toolchain.toml` with the `wasm32v1-none` target and `rustfmt`/`clippy`/`rust-src` components) and the [Soroban CLI](https://soroban.stellar.org/docs/cli) ≥ 25.2. See [Build & deploy](#build--deploy) for why `make build` wraps `stellar contract build` rather than `cargo build`.
+**Requirements:** Rust `stable` (pinned in `rust-toolchain.toml` with the `wasm32v1-none` target and `rustfmt`/`clippy`/`rust-src` components) and the [Soroban CLI](https://soroban.stellar.org/docs/cli) ≥ 25.2 — though `make spec-file`/`spec-check` compare CLI-formatted text, so CI installs the version pinned in the Makefile (`PINNED_STELLAR_CLI`) and expects that one locally too. See [Build & deploy](#build--deploy) for why `make build` wraps `stellar contract build` rather than `cargo build`.
 
 ### Deployed instances
 
@@ -216,6 +222,8 @@ Two things that check does **not** establish, stated plainly rather than glossed
 - **The published bytes are not reproducible from this history.** `b74a40d` — the commit whose spec matches the deployed instance exactly — rebuilds to `f5167a00513568d82c417c3bf93e06e3355aea893789272bd0522262163d1756`, not `ff125048…`, with the toolchain this repo pins. No commit here has been shown to produce the deployed WASM, so the hash is a fact about the chain rather than a link back to source: what stays checkable is the *interface*, via `make spec-deployed` against `make interface` at any commit.
 - **#2 and #6 are invisible to a spec diff.** Both changed the body of `get_spending_limit_state` without touching a signature, so no comparison of interfaces can say whether the deployed instance carries those fixes. Until a version 2 deploy happens, the honest description of the live testnet helper is "pre-#5 API, fix history unknown from the chain".
 
+What *is* reproducible is `master` itself, and CI now proves it rather than asserting it: the **Build WASM & check pinned interface** job compiles on a GitHub runner with the pinned toolchain and the pinned stellar-cli, prints the sha256 into the run summary, and uploads `policy_view_helper.wasm`. Its first run produced `6190f5a1c94d866b2b72b0f4d841ca2ca609a29519afb33d17d573505b52d876` — the same hash as `make build` on the dev machine that wrote this — so a redeploy's artefact can be tied to a commit by anyone, not only by whoever held the keys.
+
 ---
 
 ## Build & deploy
@@ -224,13 +232,16 @@ Run from the repo root. `make` with no target lists every target; `make versions
 
 ```bash
 make build        # → target/wasm32v1-none/release/policy_view_helper.wasm
-make check        # cargo test --workspace + clippy --all-targets -- -D warnings (the CI gate)
+make check        # cargo test --workspace + clippy --all-targets -- -D warnings
+make spec-check   # the committed interface still matches the built WASM
 make hash         # sha256 of the artefact — this is the on-chain WASM id
 make interface    # the contract spec this checkout publishes
 make verify       # build + fetch, then compare hashes and specs against the chain
 make deploy SOURCE_ACCOUNT=<stellar key alias>
 make clean
 ```
+
+`make check` and `make spec-check` are the two CI jobs; see [Scripts & CI](#scripts--ci).
 
 ### `stellar contract build` is the only build that works here
 
@@ -247,7 +258,7 @@ The crate enables the SDK's `experimental_spec_shaking_v2` feature, and only the
 
 ### Environment
 
-Everything is a `?=`-defaulted make variable, so it can be set on the command line or in the environment. The names match the app repo's `.env`.
+Almost everything is a `?=`-defaulted make variable, so it can be set on the command line or in the environment. The names match the app repo's `.env`.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -256,8 +267,11 @@ Everything is a `?=`-defaulted make variable, so it can be set on the command li
 | `NETWORK` | `testnet` | Passed to `stellar contract deploy`; anything else is treated as publishing |
 | `CONTRACT_ID` | the instance in the table above | What `fetch`, `spec-deployed` and `verify` read |
 | `EXPECTED_WASM_HASH` | the sha256 in the table above | `verify` fails if the chain disagrees with the README |
+| `SPEC_FILE` | `specs/policy-view-helper.txt` | Where the committed interface lives; `spec-file` writes it, `spec-check` and CI read it |
 | `SOURCE_ACCOUNT` | *unset* | A key alias already in `stellar keys ls`. `deploy` refuses to run without it |
 | `ALLOW_MAINNET` | *unset* | Must be `1` before `NETWORK` may be anything but `testnet` |
+
+One variable is deliberately *not* overridable: `PINNED_STELLAR_CLI := 28.1.0`. CI installs that exact release, and `spec-check` names it in its failure message, because the committed interface is the CLI's formatting of the spec — if the formatter could be swapped per run, the gate would pass or fail depending on the machine.
 
 `SOURCE_ACCOUNT` names a key the Soroban CLI holds in its own config (`stellar keys generate <name>` then `stellar keys fund <name>` for a throwaway testnet account). A secret never belongs in this file, in a target, in a shell history line that gets pasted into an issue, or in a commit — `--auto-sign` with an alias is the whole point.
 
@@ -294,8 +308,10 @@ spendguard-contract/
 │   │                               #   specific PolicyViewError per failure
 │   │                               #   mode, window-order driven by the policy
 │   └── test_snapshots/             # Soroban snapshot fixtures
-├── .github/workflows/ci.yml        # Test & Clippy on every push/PR to master
-├── Makefile                        # build / check / verify / guarded deploy
+├── specs/
+│   └── policy-view-helper.txt      # The interface the built WASM publishes, CI-checked
+├── .github/workflows/ci.yml        # Test & Clippy, plus WASM build + pinned interface
+├── Makefile                        # build / check / verify / spec-check / guarded deploy
 ├── rust-toolchain.toml             # Pinned Rust stable + wasm32v1-none target
 ├── CONTRIBUTING.md · SECURITY.md · drips.json · LICENSE
 └── Cargo.toml                      # Workspace root manifest
@@ -324,11 +340,28 @@ The `stellar-accounts` dependency is **pinned** and only used in tests — the p
 | `make check` / `cargo test --workspace` | Runs the 20-test suite (positive, negative — each asserting a specific `PolicyViewError` — OZ compatibility, window-start ordering, and multi-policy cases) |
 | `cargo clippy --workspace --all-targets -- -D warnings` | Lints with warnings denied (CI gate) |
 | `make hash` / `make interface` | The sha256 and the spec of the artefact this checkout produces |
+| `make spec-file` / `make spec-check` | Writes / verifies `specs/policy-view-helper.txt`, the interface committed next to the source |
 | `make fetch` / `make fetch-hash` / `make spec-deployed` | The same three readings of the instance that is actually deployed |
 | `make verify` | Compares the two, and fails if the chain no longer matches the hash recorded in the README |
 | `make deploy SOURCE_ACCOUNT=<alias>` | Testnet deploy; refuses to guess an account and refuses any network but `testnet` without `ALLOW_MAINNET=1` |
 
-CI (GitHub Actions) runs **Test & Clippy** on every push and pull request to `master`. It does not build the WASM or touch the network: `make verify` needs an RPC connection, so it is a human/agent step, documented above rather than wired into a job that would silently pass by skipping it.
+CI (GitHub Actions) runs two jobs on every push and pull request to `master`:
+
+- **Test & Clippy** — `cargo test --workspace`, then clippy with warnings denied.
+- **Build WASM & check pinned interface** — installs the stellar-cli the Makefile
+  pins (`PINNED_STELLAR_CLI`), builds the WASM, fails when
+  `specs/policy-view-helper.txt` no longer describes it, and uploads the built
+  artefact with its sha256 in the job summary.
+
+The second job exists because the app decodes this contract's responses: an
+interface change that only appears when the indexer breaks is a change that got
+past review. Pinning the CLI version matters for the diff — the committed file is
+the CLI's *formatting* of the spec, so a formatter upgrade can produce a diff with
+no API change; `make spec-check` says so and prints both versions.
+
+`make verify` is still not a CI step: it needs a testnet RPC connection, and a job
+that would silently pass by skipping its network calls documents less than a
+human/agent step that either runs or reports the failure.
 
 ---
 

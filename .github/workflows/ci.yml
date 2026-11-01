@@ -22,7 +22,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
-          targets: wasm32v1-none
+          target: wasm32v1-none
           components: rustfmt, clippy, rust-src
 
       - name: Run tests
@@ -34,3 +34,92 @@ jobs:
       # canonical way to deny all warnings.
       - name: Clippy (deny warnings)
         run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # The app indexes this contract by decoding its responses, so a public-API
+  # change that only shows up when the app breaks is a change that got through
+  # review. specs/ is the interface, checked in and compared against the WASM
+  # this commit actually builds.
+  interface:
+    name: Build WASM & check pinned interface
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The input is `target`, not `targets`: this action warns about an unknown
+      # input and carries on, and the WASM build then fails with
+      # "can't find crate for `core`" — which reads like a source problem.
+      - name: Install Rust toolchain (rust-toolchain.toml)
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: wasm32v1-none
+          components: rustfmt, clippy, rust-src
+
+      # The pinned spec is text `stellar contract info interface` prints, not
+      # text the WASM carries, so the formatter version is part of the
+      # comparison. Read it from the Makefile instead of repeating it here.
+      - name: Read the pinned stellar-cli version
+        id: cli
+        run: |
+          set -euo pipefail
+          version=$(make --eval='show-pin: ; @echo $(PINNED_STELLAR_CLI)' show-pin 2>/dev/null \
+            || sed -n 's/^PINNED_STELLAR_CLI *:= *//p' Makefile)
+          # Empty here would mean the download step asks for releases/download/v/…,
+          # which fails with a 404 that looks nothing like a missing variable.
+          case "$version" in
+            [0-9]*.[0-9]*) ;;
+            *) echo "Could not read PINNED_STELLAR_CLI from the Makefile (got '$version')"; exit 1 ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "pinning stellar-cli $version"
+
+      # The prebuilt release binary: `cargo install stellar-cli` builds the whole
+      # CLI from source and takes longer than the tests it is here to run.
+      - name: Install stellar-cli (pinned release binary)
+        run: |
+          set -euo pipefail
+          version="${{ steps.cli.outputs.version }}"
+          asset="stellar-cli-$version-x86_64-unknown-linux-gnu.tar.gz"
+          curl -sSL -o "$RUNNER_TEMP/$asset" \
+            "https://github.com/stellar/stellar-cli/releases/download/v$version/$asset"
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/bin/stellar" --version
+
+      # Both halves of `make build` in one line each, so a broken environment
+      # names itself instead of surfacing as a rustc error two minutes in.
+      - name: Preflight the build environment
+        run: |
+          set -euo pipefail
+          rustup target list --installed | grep -qx wasm32v1-none || {
+            echo "wasm32v1-none is not installed; 'stellar contract build' cannot compile for it."
+            rustup target list --installed
+            exit 1
+          }
+          stellar --version
+
+      - name: Check specs/policy-view-helper.txt against the built WASM
+        run: make spec-check
+
+      # Publishing the artefact is what makes "the deployed WASM is this
+      # source" checkable by someone other than the person who ran the deploy.
+      - name: Record the WASM hash this commit builds to
+        run: |
+          set -euo pipefail
+          wasm=target/wasm32v1-none/release/policy_view_helper.wasm
+          sha256sum "$wasm"
+          {
+            echo "### Built WASM"
+            echo
+            echo '```'
+            sha256sum "$wasm"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload built WASM
+        uses: actions/upload-artifact@v4
+        with:
+          name: policy-view-helper-wasm
+          path: target/wasm32v1-none/release/policy_view_helper.wasm
+          if-no-files-found: error
