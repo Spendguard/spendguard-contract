@@ -3,13 +3,17 @@
 ## How to contribute
 
 1. **Fork** the repository.
-2. **Create a feature branch** from `main`.
+2. **Create a feature branch** from `master`.
 3. **Make your changes** following the coding standards below.
-4. **Run tests** before opening a PR:
+4. **Run the CI gates** before opening a PR:
    ```bash
    cargo test --workspace
+   cargo clippy --workspace --all-targets -- -D warnings
    ```
-5. **Open a pull request** with a clear title and description.
+5. **Stage the files you changed** (`git add <path>`) rather than `git add -A`.
+   `target/` and `contracts/*/test_snapshots/` are build and test output; they
+   are listed in `.gitignore` and are never committed.
+6. **Open a pull request** with a clear title and description.
 
 ## Commit convention
 
